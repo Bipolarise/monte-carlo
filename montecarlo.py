@@ -179,3 +179,6 @@ mu_values = calculate_initial_variance(all_data)
 
 for ticker, mu in mu_values.items():
     print(f"{ticker}: mu = {mu:.6f}")
+
+
+#123456
