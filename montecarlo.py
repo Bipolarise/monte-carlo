@@ -2,6 +2,9 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 import matplotlib.pyplot as plt
+import math
+from scipy.optimize import minimize
+
 
 # Heston Volatility Model
 
@@ -156,8 +159,47 @@ def calculate_initial_variance(universe_data):
     
     return initial_variances
 
+def calculate_log_returns(universe_data):
+    for ticker in universe_data.columns:
+        
+        prices = universe_data[ticker]
+        log_returns = np.log(prices / prices.shift(1)).dropna()
+        
+    return log_returns
+
+
+def calculate_neg_log_likelihood(params, variance, dt = 1/252):
+    """
+    Finds the negative log likelihood of the Heston variance model.
+    
+    Parameters:
+    params: list of Heston parameters, [kappa, theta, sigma_v]
+    variance: observed realized variance
+    dt: time step (daily)
+    """
+    kappa, theta, sigma_v = params
+    
+    v_t = variance.iloc[0]
+    n = len(variance)
+    log_likelihood = 0
+    
+    for t in range(1,n):
+        
+        mu = v_t + kappa * (theta - v_t) * dt
+        var = sigma_v ** 2 * v_t * dt 
+        observed = variance.iloc[t]
+    
+        log_likelihood += -0.5 * np.log(2 * math.pi * var) - 0.5 * ((observed - mu) ** 2 / var)
+        
+        v_t = observed
+        v_t = max(v_t, 1e-6)
+
+        var = (sigma_v ** 2 * v_t * dt) + 1e-6 
 
         
+    return -log_likelihood
+
+
 
 # Download Real Data
 
@@ -173,12 +215,30 @@ for stock in universe:
     stock_data = yf.download(stock, start = start, end = end)['Adj Close']
     all_data[stock] = stock_data
     
+    
 
 all_data = pd.DataFrame(all_data)
-mu_values = calculate_initial_variance(all_data)
 
-for ticker, mu in mu_values.items():
-    print(f"{ticker}: mu = {mu:.6f}")
+log_returns = calculate_log_returns(all_data)
+realized_variance = log_returns.rolling(window=5).var() * 252
+
+initial_guess = [2.0, realized_variance.mean(), 0.1]
+bounds = [(0.01, 5), (0.0001, 0.2), (0.01, 1)]
+
+result = minimize(calculate_neg_log_likelihood, initial_guess, args=(realized_variance,), bounds=bounds)
+kappa_est, theta_est, sigma_v_est = result.x
+print(f"Estimated Parameters:")
+print(f"  kappa: {kappa_est:.4f}")
+print(f"  theta: {theta_est * np.sqrt(252):.6f}")
+print(f"  sigma_v: {sigma_v_est:.6f}")
+
+
+# for ticker, mu in mu_values.items():
+#     print(f"{ticker}: mu = {mu:.6f}")
 
 
 #123456
+# cd monte-carlo
+# git add .
+# git commit -m "smthn"
+# git push
