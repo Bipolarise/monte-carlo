@@ -85,27 +85,7 @@ def Geometric_Brownian_Motion(S_0, mu, T, dt, n_paths, v0, kappa, theta, sigma_v
         
     return stock_paths, vol_paths
 
-'''
-# Example usage:
-S_0 = 100        # Initial stock price
-mu = 0.05        # Drift
-T = 1.0          # Time horizon (1 year)
-dt = 0.01        # Time step
-n_paths = 20      # Number of simulation paths
 
-# Heston model parameters
-v0 = 0.04        # Initial variance (vol^2)
-kappa = 2.0      # Mean-reversion rate
-theta = 0.04     # Long-term mean variance
-sigma_v = 0.3    # Volatility of variance (vol of vol)
-
-# Simulate GBM with Heston volatility
-stock_paths, vol_paths = Geometric_Brownian_Motion(S_0, mu, T, dt, n_paths, v0, kappa, theta, sigma_v)
-
-# Print results
-for i in range(n_paths):
-    print(f"Path {i+1} - Final Stock Price: {stock_paths[i, -1]:.2f}")
-'''
 
 
 
@@ -204,37 +184,71 @@ def calculate_neg_log_likelihood(params, variance, dt = 1/252):
 # Download Real Data
 
 universe = [
-    'AAPL', 'NVDA'
+    'NVDA'
 ]
 
-all_data = {}
-start = '2023-12-8'
-end = '2024-12-8'
+# all_data = {}
+# start = '2023-12-8'
+# end = '2024-12-8'
 
-for stock in universe:
-    stock_data = yf.download(stock, start = start, end = end)['Adj Close']
-    all_data[stock] = stock_data
+# for stock in universe:
+#     stock_data = yf.download(stock, start = start, end = end)['Adj Close']
+#     all_data[stock] = stock_data
     
     
 
-all_data = pd.DataFrame(all_data)
+# all_data = pd.DataFrame(all_data)
 
-log_returns = calculate_log_returns(all_data)
-realized_variance = log_returns.rolling(window=5).var() * 252
+# log_returns = calculate_log_returns(all_data)
+# realized_variance = log_returns ** 2
 
-initial_guess = [2.0, realized_variance.mean(), 0.1]
-bounds = [(0.01, 5), (0.0001, 0.2), (0.01, 1)]
+# initial_guess = [2.0, realized_variance.mean(), 0.1]
+# bounds = [(0.01, 5), (0.0001, 0.2), (0.01, 1)]
 
-result = minimize(calculate_neg_log_likelihood, initial_guess, args=(realized_variance,), bounds=bounds)
-kappa_est, theta_est, sigma_v_est = result.x
-print(f"Estimated Parameters:")
-print(f"  kappa: {kappa_est:.4f}")
-print(f"  theta: {theta_est * np.sqrt(252):.6f}")
-print(f"  sigma_v: {sigma_v_est:.6f}")
-
+# result = minimize(calculate_neg_log_likelihood, initial_guess, args=(realized_variance,), bounds=bounds)
+# kappa_est, theta_est, sigma_v_est = result.x
+# print(f"Estimated Parameters:")
+# print(f"  kappa: {kappa_est:.4f}")
+# print(f"  theta: {theta_est * np.sqrt(252):.6f}")
+# print(f"  sigma_v: {sigma_v_est:.6f}")
 
 # for ticker, mu in mu_values.items():
 #     print(f"{ticker}: mu = {mu:.6f}")
+
+
+# Example usage:
+S_0 = 130.69        # Initial stock price
+mu = 0.05        # Drift
+T = 1.0          # Time horizon (1 year)
+dt = 0.01        # Time step
+n_paths = 100      # Number of simulation paths
+
+# Heston model parameters
+v0 = 0.04        # Initial variance (vol^2)
+kappa = 2.0      # Mean-reversion rate
+theta = 0.04     # Long-term mean variance
+sigma_v = 0.3    # Volatility of variance (vol of vol)
+
+# Simulate GBM with Heston volatility
+S_T, vol_paths = Geometric_Brownian_Motion(S_0, mu, T, dt, n_paths, v0, kappa, theta, sigma_v)
+
+# Print results
+for i in range(n_paths):
+    print(f"Path {i+1} - Final Stock Price: {S_T[i, -1]:.2f}")
+    
+K = 100
+r = 0.05
+payoffs = np.maximum(S_T - K, 0)
+discounted_payoffs = np.exp(-r * T) * payoffs
+
+# Monte Carlo option price
+option_price = np.mean(discounted_payoffs)
+print(f"Option Price: {option_price}")
+
+
+
+
+
 
 
 #123456
