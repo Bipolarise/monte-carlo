@@ -7,10 +7,26 @@ from scipy.optimize import minimize
 from scipy.stats import norm
 from hmmlearn.hmm import GaussianHMM
 
+# Exemplar Testing Constants
+gbm_params = {
+    "mu": 0.05  # Drift
+}
+
+high_vol_params = {
+    "v0": 0.04,
+    "kappa": 2.0,
+    "theta": 0.04,
+    "sigma_v": 0.3
+}
+
+S0 = 100  # Starting stock price
+T = 1.0  # 1 year
+dt = 0.01  # Time step size
+n_paths = 100  # Number of paths
 
 # Heston Volatility Model
 
-def heston_volatility_process(v0, kappa, theta, sigma_v, T, dt, n_paths, rho, mu):
+def heston_volatility_process(v0, kappa, theta, sigma_v, T, dt, n_paths):
     """
     Simulates the volatility process from the Heston model.
 
@@ -26,6 +42,8 @@ def heston_volatility_process(v0, kappa, theta, sigma_v, T, dt, n_paths, rho, mu
     Returns:
     vol_paths : Simulated volatility paths (square root of variance).
                 When converted to a Pandas DataFrame, each consecutive row represents
+                
+    NOTE: Need to incorporate rho, mu
     """
     
     n_steps = int(T/dt)
@@ -45,7 +63,6 @@ def heston_volatility_process(v0, kappa, theta, sigma_v, T, dt, n_paths, rho, mu
 
 # Geometric Brownian Motion (Simulation of Underlying Asset Price)
 def Geometric_Brownian_Motion(S_0, mu, T, dt, n_paths, v0, kappa, theta, sigma_v):
-    
     """
     Simulates stock prices according to the Geometric Brownian Motion.
     
@@ -56,6 +73,7 @@ def Geometric_Brownian_Motion(S_0, mu, T, dt, n_paths, v0, kappa, theta, sigma_v
     T       : Terminal time
     dt      : Time step.
     n       : Number of simulation paths.
+    v0      :
 
     Returns:
     vol_paths : Simulated volatility paths (square root of variance).
@@ -67,30 +85,13 @@ def Geometric_Brownian_Motion(S_0, mu, T, dt, n_paths, v0, kappa, theta, sigma_v
     vol_paths = heston_volatility_process(v0, kappa, theta, sigma_v, T, dt, n_paths)
     
     for i in range(1, n_steps + 1):
-        
-        Z = np.random.normal(0, 1, size = n_paths)
-        dt_sqrt = np.sqrt(dt)
-        
-        time = 0
+        Z = np.random.normal(0, 1, size=n_paths)  # Independent noise for each path
+        stock_paths[:, i] = stock_paths[:, i - 1] * np.exp(
+            (mu - 0.5 * vol_paths[:, i - 1] ** 2) * dt +
+            vol_paths[:, i - 1] * Z * np.sqrt(dt)
+        )
 
-        while (time + dt <= T):
-            stock_paths[:,i] = stock_paths[:,i-1] * np.exp(
-                (mu - 0.5 * vol_paths[:,i-1]**2) * dt + vol_paths[:,i-1] * np.random.normal(0, dt_sqrt)
-                )
-                        
-            time += dt
-            
-        if T - time > 0:
-            stock_paths[:,i] = stock_paths[:,i-1] * np.exp(
-                (mu - 0.5 * vol_paths[:,i-1]**2) * (T - time) + vol_paths[:,i-1] * np.random.normal(0, np.sqrt(T - time))
-                )
-            
-        
     return stock_paths, vol_paths
-
-
-
-
 
 
 def calculate_mu(universe_data):
@@ -288,14 +289,14 @@ def simulate_HMM_Regime(start = '2000-01-01', end = '2023-01-01'):
     hmm = GaussianHMM(n_components = 2, covariance_type="diag", n_iter = 1000)
     hmm.fit(X)
     
-    regimes = hmm.predict(X)
-    regimes = pd.DataFrame(regimes)
+    historical_regimes = hmm.predict(X)
+    historical_regimes = pd.DataFrame(historical_regimes)
+    historical_regimes = historical_regimes.set_index(SP500_returns.index)
     
     # TEST THIS FUNCTION
-    return hmm, regimes, SP500_returns, X
+    return hmm, historical_regimes, SP500_returns, X
     
-hmm, regimes, SP500_returns, X = simulate_HMM_Regime(start = '2000-01-01', end = '2023-01-01')
-print(hmm,regimes)
+hmm, historical_regimes, SP500_returns, X = simulate_HMM_Regime(start = '2000-01-01', end = '2023-01-01')
 
 
 def simulate_future_regimes(hmm, n_steps = 100, last_date = '2023-01-01'):
@@ -327,10 +328,122 @@ def simulate_future_regimes(hmm, n_steps = 100, last_date = '2023-01-01'):
 
 
 future_regimes = simulate_future_regimes(hmm, n_steps = 100)
-print(future_regimes)
 
 # NEED TO IDENTIFY WHETHER 0 OR 1 IS HIGH VOL
-# 
+
+def identify_hl_vol(historical_regimes, SP500_returns):
+    """
+    Identifies whether 0 or 1 is high or low volatility. Converts the existing future_regimes Series into either "High Volatility"
+    or "Low Volatility"
+    
+    Parameters:
+    future_regimes: Output from the simulate_future_regimes function
+    SP500_returns: The Pandas Series for the SP500 returns, as obtained from the simulate_HMM_regime function
+    
+    Returns:
+    dict: A dictionary for whether 0 or 1 is High or Low Volatility Regime
+    
+    NOTE: Prediction Series length must align with the SP500_returns length
+    """
+    historical_regimes.index = SP500_returns.index
+    
+    group_0 = SP500_returns[historical_regimes[0]  == 0]
+    group_1 = SP500_returns[historical_regimes[0]  == 1]
+    
+    print("Group 0:")
+    print(group_0)
+    
+    print("\n Group 1:")
+    print(group_1)
+    
+    g1_returns = SP500_returns.loc[group_1.index]
+    g0_returns = SP500_returns.loc[group_0.index]
+    
+    if g0_returns.std() > g1_returns.std():
+        result = {
+            "High Volatility": g0_returns,
+            "Low Volatility": g1_returns,
+            "High Vol Regime": 0,
+            "Low Vol Regime": 1
+        }
+    else:
+        result = {
+            "High Volatility": g1_returns,
+            "Low Volatility": g0_returns,
+            "High Vol Regime": 1,
+            "Low Vol Regime": 0
+        }
+        
+    high_vol_regime = result["High Vol Regime"]
+    low_vol_regime = result["Low Vol Regime"]
+    
+    future_volatility = future_regimes.replace({
+        high_vol_regime: "High Volatility",
+        low_vol_regime: "Low Volatility"
+    })
+        
+    return future_volatility
+
+
+def simulate_stock_prices(S0, T, dt, n_paths, high_vol_params, low_vol_params):
+    """
+    Combines the Hidden Markov Model (HMM) with the Heston volatility model, when volatility is high, and the Geometric Brownian Motion
+    Model, when volatility is low.
+    
+    Parameters:
+    
+    """
+    future_volatility = identify_hl_vol(historical_regimes, SP500_returns)
+    
+    n_steps = int(T/dt)
+    simulated_prices = np.zeros((n_paths, n_steps + 1))
+    simulated_prices[:, 0] = S0
+    
+    for t, regime in enumerate(future_volatility):
+        print(f"Step {t}, Regime: {regime}")
+
+        if regime == "High Volatility":
+            
+            # Heston Model Parameters
+            v0 = high_vol_params["v0"]
+            kappa = high_vol_params["kappa"]
+            theta = high_vol_params["theta"]
+            sigma_v = high_vol_params["sigma_v"]
+
+            # Simulate using the Heston model for this step
+            vol_paths = heston_volatility_process(v0, kappa, theta, sigma_v, T, dt, n_paths)
+            for i in range(1, n_steps + 1):
+                Z = np.random.normal(size=n_paths)
+                simulated_prices[:, i] = simulated_prices[:, i - 1] * np.exp(
+                    (-0.5 * vol_paths[:, i - 1] ** 2) * dt +
+                    vol_paths[:, i - 1] * Z * np.sqrt(dt)
+                )
+        
+        elif regime == "Low Volatility":
+            mu = low_vol_params['mu']
+            
+            stock_paths, _ = Geometric_Brownian_Motion(S0, mu, T, dt, n_paths,
+                                                       v0 = high_vol_params["v0"],
+                                                       theta=high_vol_params["theta"],
+                                                       sigma_v=high_vol_params["sigma_v"],
+                                                       kappa = high_vol_params["kappa"])
+            
+            simulated_prices[:, t+1] = stock_paths[:, t+1]
+       
+            
+    return pd.DataFrame(simulated_prices)
+    
+simulated_prices = simulate_stock_prices(S0, T, dt, n_paths, high_vol_params, gbm_params)
+print(simulated_prices)
+
+plt.figure(figsize=(12, 7))
+for i in range(simulated_prices.shape[0]):
+    plt.plot(simulated_prices.iloc[i, :], alpha=0.7)
+plt.title("100 Simulations of Stock Prices")
+plt.ylabel("Price in $")
+plt.xlabel("Time Steps")
+plt.show()
+
 
 def run_model():    
     # Download Real Data
