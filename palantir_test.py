@@ -1,26 +1,48 @@
-import tensorflow as tf
+import numpy as np
+import pandas as pd
+from scipy.optimize import minimize
+import yfinance as yf
 
-def check_tensorflow_installation():
-    try:
-        # Check TensorFlow version
-        print("TensorFlow Version:", tf.__version__)
-        
-        # Perform a simple computation using TensorFlow
-        a = tf.constant(5)
-        b = tf.constant(3)
-        c = tf.add(a, b)
-        print("TensorFlow is working! The result of 5 + 3 is:", c.numpy())
-        
-        # Check if GPU is available
-        gpu_devices = tf.config.list_physical_devices('GPU')
-        if gpu_devices:
-            print("GPU is available! Devices:", gpu_devices)
-        else:
-            print("GPU is not available.")
-            
-    except Exception as e:
-        print("An error occurred. TensorFlow may not be installed correctly.")
-        print("Error details:", str(e))
+# Step 1: Download data and calculate log returns
+def prepare_data(ticker, start, end):
+    data = yf.download(ticker, start=start, end=end)['Adj Close']
+    data = pd.DataFrame(data)
+    data['Log Returns'] = np.log(data['Adj Close'] / data['Adj Close'].shift(1))
+    data['Squared Log Returns'] = data['Log Returns']**2
+    return data.dropna()
 
-# Run the check
-check_tensorflow_installation()
+data = prepare_data(ticker = 'PLTR', start = '2023-01-01', end = '2024-01-01')
+log_returns = data['Log Returns']
+initial_guess = [data['Log Returns'].mean(), data['Log Returns'].std()]
+
+
+
+def neg_log_likelihood(params, returns):
+    mu, sigma = params[0], params[1]
+    n = len(returns)
+    log_likelihood = (
+        -n / 2 * np.log(2 * np.pi)
+        - n / 2 * np.log(sigma**2)
+        - np.sum((returns - mu)**2) / (2 * sigma**2)
+    )
+    return -log_likelihood
+
+
+result = minimize(
+    neg_log_likelihood,
+    initial_guess,
+    args=(log_returns,),
+    bounds=[(-np.inf, np.inf), (1e-6, np.inf)]  # Ensure sigma > 0
+)
+
+mu_mle, sigma_mle = result.x
+
+mu_annualized = mu_mle * 252
+
+print(f"Estimated mu (daily): {mu_mle}")
+print(f"Estimated mu (annualized): {mu_annualized}")
+print(f"Estimated sigma (daily): {sigma_mle}")
+print(f"Estimated sigma (annualized): {sigma_mle * np.sqrt(252)}")
+
+sample_mean = np.mean(log_returns)
+print(sample_mean)

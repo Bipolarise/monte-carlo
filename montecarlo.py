@@ -8,6 +8,10 @@ from scipy.stats import norm
 from hmmlearn.hmm import GaussianHMM
 from scipy.stats import norm
 
+universe = ['NVDA', 'AAPL', 'GOOG']
+start = '2022-01-01'
+end = '2023-12-31'
+
 # Exemplar Testing Constants
 gbm_params = {
     "mu": 0.05  # Drift
@@ -24,6 +28,7 @@ S0 = 100  # Starting stock price
 T = 2.0  # 1 year
 dt = 0.01  # Time step size
 n_paths = 100  # Number of paths
+r = 0.05 # Risk Free Rate
 
 # Heston Volatility Model
 
@@ -153,39 +158,6 @@ def calculate_log_returns(universe_data):
     return log_returns
 
 
-def calculate_neg_log_likelihood(params, variance, dt = 1/252):
-    """
-    Finds the negative log likelihood of the Heston variance model.
-    
-    Parameters:
-    params: list of Heston parameters, [kappa, theta, sigma_v]
-    variance: observed realized variance
-    dt: time step (daily)
-    """
-    kappa, theta, sigma_v = params
-    
-    v_t = variance.iloc[0]
-    n = len(variance)
-    log_likelihood = 0
-    
-    for t in range(1,n):
-        
-        mu = v_t + kappa * (theta - v_t) * dt
-        var = sigma_v ** 2 * v_t * dt 
-        observed = variance.iloc[t]
-    
-        log_likelihood += -0.5 * np.log(2 * math.pi * var) - 0.5 * ((observed - mu) ** 2 / var)
-        
-        v_t = observed
-        v_t = max(v_t, 1e-6)
-
-        var = (sigma_v ** 2 * v_t * dt) + 1e-6 
-
-        
-    return -log_likelihood
-
-
-
 def Black_Scholes_Compare(S_t, K, r, t, sigma):
     """
     Finds the option price according to the Black Scholes Formula
@@ -232,42 +204,6 @@ def use_BSM_Compare():
         
         print("Option Prices:")
         print(option_prices)
-        
-# THIS IS A TEST FUNCTION (NOT COMPLETE)
-def monte_carlo_simulation():
-    
-    # Example usage:
-    S_0 = 130.69     # Initial stock price
-    mu = 0.05        # Drift
-    T = 1.0          # Time horizon (1 year)
-    dt = 0.01        # Time step
-    n_paths = 100    # Number of simulation paths
-
-    # Heston model parameters
-    v0 = 0.04        # Initial variance (vol^2)
-    kappa = 2.0      # Mean-reversion rate
-    theta = 0.04     # Long-term mean variance
-    sigma_v = 0.3    # Volatility of variance (vol of vol)
-
-    # Simulate GBM with Heston volatility
-    S_T, vol_paths = Geometric_Brownian_Motion(S_0, mu, T, dt, n_paths, v0, kappa, theta, sigma_v)
-
-    vol_paths = pd.DataFrame(vol_paths)
-    # Print results
-    for i in range(n_paths):
-        print(f"Path {i+1} - Final Stock Price: {S_T[i, -1]:.2f}")
-        
-    K = 100
-    r = 0.05
-    payoffs = np.maximum(S_T - K, 0)
-    discounted_payoffs = np.exp(-r * T) * payoffs
-
-    # Monte Carlo option price
-    option_price = np.mean(discounted_payoffs)
-    print(f"Option Price: {option_price}")
-    print(f"Volatility Path: {vol_paths}")
-
-
 
 
 def simulate_HMM_Regime(start = '2000-01-01', end = '2023-01-01'):
@@ -300,7 +236,7 @@ def simulate_HMM_Regime(start = '2000-01-01', end = '2023-01-01'):
 hmm, historical_regimes, SP500_returns, X = simulate_HMM_Regime(start = '2000-01-01', end = '2023-01-01')
 
 
-def simulate_future_regimes(hmm, n_steps = 100, last_date = '2023-01-01'):
+def simulate_future_regimes(hmm, n_steps, last_date = '2023-01-01'):
     """
     Simulates/Predicts future market regimes using a trained Hidden Markov Model from probabilities trained from
     simulate_HMM_Regime
@@ -346,6 +282,7 @@ def identify_hl_vol(historical_regimes, SP500_returns):
     
     NOTE: Prediction Series length must align with the SP500_returns length
     """
+    
     historical_regimes.index = SP500_returns.index
     
     group_0 = SP500_returns[historical_regimes[0]  == 0]
@@ -408,7 +345,7 @@ def simulate_stock_prices(S0, T, dt, n_paths, high_vol_params, low_vol_params):
     simulated_prices[:, 0] = S0
     
     for t, regime in enumerate(future_volatility):
-        print(f"Step {t}, Regime: {regime}")
+        # print(f"Step {t}, Regime: {regime}")
 
         if regime == "High Volatility":
             
@@ -490,21 +427,30 @@ def convergence_analysis(simulated_prices, future_regimes=None):
     final_mean = cumulative_mean.iloc[-1]
 
     # Optional Plotting
-    plt.figure(figsize=(12, 7))
-    plt.plot(cumulative_mean, label="Cumulative Mean", color="blue")
-    plt.fill_between(range(len(cumulative_mean)), lower_bound, upper_bound, color="blue", alpha=0.2, label="95% Confidence Interval")
-    plt.title("Convergence Analysis of Simulated Prices")
-    plt.xlabel("Number of Simulations")
-    plt.ylabel("Final Price")
-    plt.legend()
+    # plt.figure(figsize=(12, 7))
+    # plt.plot(cumulative_mean, label="Cumulative Mean", color="blue")
+    # plt.fill_between(range(len(cumulative_mean)), lower_bound, upper_bound, color="blue", alpha=0.2, label="95% Confidence Interval")
+    # plt.title("Convergence Analysis of Simulated Prices")
+    # plt.xlabel("Number of Simulations")
+    # plt.ylabel("Final Price")
+    # plt.legend()
     # plt.show()
 
     return lower_bound, upper_bound, final_mean
 
-lower_bound, upper_bound, final_mean = convergence_analysis(simulated_prices, future_regimes=None)
+def calculate_option_price(final_mean):
+    """
+    Calculates the price of the option given the predicted price
+    
+    Parameters:
+    final_mean: int
+        The final mean of the Monte Carlo Simulation of Stock Prices
+    """
 
-option_payoff = np.max(final_mean - S0, 0)
-print(option_payoff)
+    option_payoff = np.max(final_mean - S0, 0)
+    option_price = option_payoff * np.exp(-r*T)
+    
+    return option_price
 
 '''plt.figure(figsize=(12, 7))
 
@@ -515,13 +461,142 @@ plt.ylabel("Price in $")
 plt.xlabel("Time Steps")
 plt.show()'''
 
+# THIS IS A TEST FUNCTION (NOT COMPLETE)
+def monte_carlo_simulation(n_batches, future_regimes = None):
+    """
+    Runs n-batches of Monte-Carlo Convergence Analyses. 
+    
+    Parameters:
+    n_batches: int
+        The number of batches to be simulated. For more accurate results, it is recommended that n_batches > 40
+    
+    NOTE: Each batch is of 100 simulations, i.e n_batches = 40 will simulate 4000. Changing the time frame is different. Changing 
+    the number of simulations is comparable to the number of 'lines' the graph will have if graphed.
+    
+    Returns:
+    mean_option_price
+    """
+    all_final_prices = []
+    option_prices = []
+    
+    for _ in range(0, n_batches + 1):
+        _, _, final_mean = convergence_analysis(simulated_prices, future_regimes=None)
+        all_final_prices.append(final_mean)
+        
+    final_prices_mean = np.mean(all_final_prices)
+    final_prices_std = np.std(all_final_prices)
+    
+    for price in all_final_prices:
+        option_price = calculate_option_price(price)
+        option_prices.append(option_price)
+        
+    mean_option_price = np.mean(option_prices)
+    
+    final_prices_mean = pd.Series(all_final_prices)
+    option_prices = pd.Series(option_prices)
+    
+    
+    return mean_option_price
+
+def print_information():
+    S0 = 100  
+    T = 2.0 
+    dt = 0.01  
+    n_paths = 100  
+    r = 0.05 
+
+# sig = monte_carlo_simulation(n_batches=50)
+# print(sig)
+    
+def download_prepare_data(universe, start, end):
+    """
+    Downloads the stocks in the universe and formats them for use.
+    
+    Parameters:
+    universe: list
+        A list of stock tickers to be analyzed.
+    start: str
+        The start date.
+    end: str
+        The end date.
+        
+    Returns:
+    data: pd.DataFrame
+        A Pandas DataFrame containing adjusted close prices and log returns for all stocks in the universe.
+    """
+    all_data = pd.DataFrame()
+    
+    for ticker in universe:
+        data = yf.download(ticker, start=start, end=end)['Adj Close']
+        data = pd.DataFrame(data)
+        data.columns = [f'{ticker}_Adj Close']  
+        
+       
+        data[f'{ticker}_Log Returns'] = np.log(data[f'{ticker}_Adj Close'] / data[f'{ticker}_Adj Close'].shift(1))
+        
+        
+        all_data = pd.concat([all_data, data], axis=1)
+    
+    return all_data.dropna()  
 
 
+
+def negative_log_likelihood(params, returns):
+    """
+    Returns the negative log likelihood for Maximum Likelihood Estimation
+    """
+    mu, sigma = params[0], params[1]
+    n = len(returns)
+    
+    log_likelihood = (
+        -n / 2 * np.log(2 * np.pi)
+        - n / 2 * np.log(sigma**2)
+        - np.sum((returns - mu)**2) / (2 * sigma**2)
+    )
+    
+    
+    return -log_likelihood
+
+# Download the data and filter log returns
+all_data = download_prepare_data(universe=universe, start=start, end=end)
+log_returns = all_data.filter(like='Log Returns')
+
+results = []
+
+for stock in log_returns.columns:
+    stock_returns = log_returns[stock].dropna()  
+
+    # Initial guess for mu and sigma
+    initial_guess = [stock_returns.mean(), stock_returns.std()]
+
+    # Perform MLE using negative log-likelihood
+    result = minimize(
+        negative_log_likelihood,
+        initial_guess,
+        args=(stock_returns,),
+        bounds=[(-np.inf, np.inf), (1e-6, np.inf)] 
+    )
+
+    mu_mle, sigma_mle = result.x
+
+    results.append({
+        'Stock': stock.replace('_Log Returns', ''),  
+        'mu_daily': mu_mle,
+        'mu_annualized': mu_mle * 252,
+        'sigma_daily': sigma_mle,
+        'sigma_annualized': sigma_mle * np.sqrt(252) 
+    })
+
+results_df = pd.DataFrame(results)
+
+print(results_df)
+
+    
 def run_model():    
     # Download Real Data
 
     universe = [
-        'NVDA'
+        'NVDA', 'AAPL', 'GOOG'
     ]
 
     all_data = {}
@@ -532,8 +607,6 @@ def run_model():
         stock_data = yf.download(stock, start = start, end = end)['Adj Close']
         all_data[stock] = stock_data
         
-        
-
     all_data = pd.DataFrame(all_data)
 
     log_returns = calculate_log_returns(all_data)
@@ -542,7 +615,7 @@ def run_model():
     initial_guess = [2.0, realized_variance.mean(), 0.1]
     bounds = [(0.01, 5), (0.0001, 0.2), (0.01, 1)]
 
-    result = minimize(calculate_neg_log_likelihood, initial_guess, args=(realized_variance,), bounds=bounds)
+    result = minimize(negative_log_likelihood, initial_guess, args=(realized_variance,), bounds=bounds)
     kappa_est, theta_est, sigma_v_est = result.x
     print(f"Estimated Parameters:")
     print(f"  kappa: {kappa_est:.4f}")

@@ -565,3 +565,71 @@ def run_model():
 # git add .
 # git commit -m "smthn"
 # git push
+
+def heston_with_correlation(S0, v0, kappa, theta, sigma_v, rho, mu, T, dt, n_paths):
+    """
+    Simulates stock prices and volatility paths using the Heston model with correlation.
+
+    Parameters:
+    S0      : Initial stock price.
+    v0      : Initial variance (v_0).
+    kappa   : Mean-reversion rate.
+    theta   : Long-term mean variance.
+    sigma_v : Volatility of variance (vol of vol).
+    rho     : Correlation between stock and volatility processes.
+    mu      : Drift of the stock price.
+    T       : Time horizon.
+    dt      : Time step.
+    n_paths : Number of simulation paths.
+
+    Returns:
+    S_paths : Simulated stock price paths.
+    v_paths : Simulated variance paths.
+    """
+    n_steps = int(T / dt)
+    S_paths = np.zeros((n_paths, n_steps + 1))
+    v_paths = np.zeros((n_paths, n_steps + 1))
+
+    # Initialize paths
+    S_paths[:, 0] = S0
+    v_paths[:, 0] = v0
+
+    for i in range(1, n_steps + 1):
+        # Generate independent standard normal random variables
+        Z1 = np.random.normal(size=n_paths)
+        Z2 = np.random.normal(size=n_paths)
+
+        # Correlate Z1 and Z2
+        dW_V = Z1 * np.sqrt(dt)
+        dW_S = (rho * Z1 + np.sqrt(1 - rho**2) * Z2) * np.sqrt(dt)
+
+        # Variance process
+        v_prev = v_paths[:, i-1]
+        v_paths[:, i] = v_prev + kappa * (theta - v_prev) * dt + sigma_v * np.sqrt(v_prev) * dW_V
+        v_paths[:, i] = np.maximum(v_paths[:, i], 0)  # Ensure non-negative variance
+
+        # Stock price process
+        S_prev = S_paths[:, i-1]
+        S_paths[:, i] = S_prev * np.exp((mu - 0.5 * v_prev) * dt + np.sqrt(v_prev) * dW_S)
+
+    return S_paths, np.sqrt(v_paths)
+
+import matplotlib.pyplot as plt
+
+S_paths, vol_paths = heston_with_correlation(S0=100, v0=0.04, kappa=2, theta=0.04, 
+                                             sigma_v=0.3, rho=-0.7, mu=0.05, T=1, dt=0.01, n_paths=1000)
+
+# Plot a few sample paths
+plt.figure(figsize=(12, 6))
+plt.plot(S_paths[:10].T)
+plt.title("Sample Stock Price Paths")
+plt.xlabel("Time Steps")
+plt.ylabel("Stock Price")
+plt.show()
+
+plt.figure(figsize=(12, 6))
+plt.plot(vol_paths[:10].T)
+plt.title("Sample Volatility Paths")
+plt.xlabel("Time Steps")
+plt.ylabel("Volatility")
+plt.show()
