@@ -6,6 +6,7 @@ import math
 from scipy.optimize import minimize
 from scipy.stats import norm
 from hmmlearn.hmm import GaussianHMM
+from scipy.stats import norm
 
 # Exemplar Testing Constants
 gbm_params = {
@@ -16,11 +17,11 @@ high_vol_params = {
     "v0": 0.04,
     "kappa": 2.0,
     "theta": 0.04,
-    "sigma_v": 0.3
+    "sigma_v": 0.2
 }
 
 S0 = 100  # Starting stock price
-T = 1.0  # 1 year
+T = 2.0  # 1 year
 dt = 0.01  # Time step size
 n_paths = 100  # Number of paths
 
@@ -391,8 +392,15 @@ def simulate_stock_prices(S0, T, dt, n_paths, high_vol_params, low_vol_params):
     Model, when volatility is low.
     
     Parameters:
+    S_0            : The initial stock price
+    T              : The time frame in years
+    dt             : The time increment
+    high_vol_params: Parameters for Heston Volatility Model (DICTIONARY)
+    low_vol_params : Parameters for GBM model (DICTIONARY)
     
+    NOTE: A lot of parameters are shared between high and low volatility, check above for how to use high and low vol params
     """
+    
     future_volatility = identify_hl_vol(historical_regimes, SP500_returns)
     
     n_steps = int(T/dt)
@@ -434,15 +442,79 @@ def simulate_stock_prices(S0, T, dt, n_paths, high_vol_params, low_vol_params):
     return pd.DataFrame(simulated_prices)
     
 simulated_prices = simulate_stock_prices(S0, T, dt, n_paths, high_vol_params, gbm_params)
-print(simulated_prices)
+final_prices = simulated_prices.iloc[:,-1:]
+final_prices.index = future_regimes.index
 
-plt.figure(figsize=(12, 7))
+def convergence_analysis(simulated_prices, future_regimes=None):
+    """
+    Performs convergence analysis on the performed Monte Carlo simulation to estimate the final stock price at the end of the period.
+    
+    Parameters:
+    simulated_prices: pd.DataFrame
+        The Pandas DataFrame of simulated prices (rows = simulations, columns = time steps).
+    future_regimes: pd.Series, optional
+        The Pandas Series of future regimes to align the index (optional).
+    
+    Returns:
+    lower_bound: pd.Series
+        The lower confidence bounds.
+    upper_bound: pd.Series
+        The upper confidence bounds.
+    final_mean: float
+        The final mean of the simulation
+    """
+
+    # Extract final prices
+    final_prices = simulated_prices.iloc[:, -1]  
+
+    if future_regimes is not None:
+        if len(final_prices) != len(future_regimes):
+            raise ValueError("Length of future_regimes must match the number of simulations.")
+        final_prices.index = future_regimes.index
+
+    n_simulations = len(final_prices)
+
+    cumulative_mean = final_prices.expanding().mean()
+    std_dev = final_prices.expanding().std()
+
+    num_samples = np.arange(1, n_simulations + 1)
+
+    # Calculate standard error
+    standard_error = std_dev / np.sqrt(num_samples)
+
+    confidence_level = 0.95
+    z = norm.ppf((1 + confidence_level) / 2)
+    lower_bound = cumulative_mean - z * standard_error
+    upper_bound = cumulative_mean + z * standard_error
+    
+    final_mean = cumulative_mean.iloc[-1]
+
+    # Optional Plotting
+    plt.figure(figsize=(12, 7))
+    plt.plot(cumulative_mean, label="Cumulative Mean", color="blue")
+    plt.fill_between(range(len(cumulative_mean)), lower_bound, upper_bound, color="blue", alpha=0.2, label="95% Confidence Interval")
+    plt.title("Convergence Analysis of Simulated Prices")
+    plt.xlabel("Number of Simulations")
+    plt.ylabel("Final Price")
+    plt.legend()
+    # plt.show()
+
+    return lower_bound, upper_bound, final_mean
+
+lower_bound, upper_bound, final_mean = convergence_analysis(simulated_prices, future_regimes=None)
+
+option_payoff = np.max(final_mean - S0, 0)
+print(option_payoff)
+
+'''plt.figure(figsize=(12, 7))
+
 for i in range(simulated_prices.shape[0]):
     plt.plot(simulated_prices.iloc[i, :], alpha=0.7)
 plt.title("100 Simulations of Stock Prices")
 plt.ylabel("Price in $")
 plt.xlabel("Time Steps")
-plt.show()
+plt.show()'''
+
 
 
 def run_model():    
