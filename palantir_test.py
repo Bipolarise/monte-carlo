@@ -3,46 +3,69 @@ import pandas as pd
 from scipy.optimize import minimize
 import yfinance as yf
 
-# Step 1: Download data and calculate log returns
+# Define the Heston simulation function
+def simulate_heston_variance(kappa, theta, sigma_v, v0, dt, n_steps):
+    np.random.seed(42)  # For reproducibility
+    v = np.zeros(n_steps)
+    v[0] = v0
+    for t in range(1, n_steps):
+        dW_v = np.random.normal(0, np.sqrt(dt))  # Wiener increment
+        v[t] = v[t-1] + kappa * (theta - v[t-1]) * dt + sigma_v * np.sqrt(max(v[t-1], 0)) * dW_v
+        v[t] = max(v[t], 0)  # Ensure non-negative variance
+    return v
+
+# Define the log-likelihood function
+def log_likelihood_heston(params, observed_v, dt):
+    kappa, theta, sigma_v, v0 = params
+    n_steps = len(observed_v)
+    simulated_v = simulate_heston_variance(kappa, theta, sigma_v, v0, dt, n_steps)
+    ll = 0
+    for t in range(1, n_steps):
+        mu = simulated_v[t-1] + kappa * (theta - simulated_v[t-1]) * dt
+        variance = sigma_v**2 * simulated_v[t-1] * dt
+        variance = max(variance, 1e-10)  # Prevent division by zero or log(0)
+        ll += -0.5 * (np.log(2 * np.pi * variance) + (observed_v[t] - mu)**2 / variance)
+    return -ll
+
+# Prepare stock data
 def prepare_data(ticker, start, end):
     data = yf.download(ticker, start=start, end=end)['Adj Close']
     data = pd.DataFrame(data)
     data['Log Returns'] = np.log(data['Adj Close'] / data['Adj Close'].shift(1))
-    data['Squared Log Returns'] = data['Log Returns']**2
+    data['Variance'] = data['Log Returns'].rolling(window=15).std()**2  # Rolling variance
     return data.dropna()
 
-data = prepare_data(ticker = 'PLTR', start = '2023-01-01', end = '2024-01-01')
-log_returns = data['Log Returns']
-initial_guess = [data['Log Returns'].mean(), data['Log Returns'].std()]
+# Function to estimate parameters for a single stock
+def estimate_heston_parameters(ticker, start='2023-01-01', end='2024-01-01'):
+    try:
+        data = prepare_data(ticker, start, end)
+        observed_v = data['Variance'].values
+        dt = 1 / 252  # Daily time steps
+        initial_guess = [1.0, observed_v.mean(), observed_v.std(), observed_v[0]]  # [kappa, theta, sigma_v, v0]
+        bounds = [(0.01, 5), (0.001, 1), (0.01, 5), (0.001, 1)]  # Parameter bounds
+        result = minimize(log_likelihood_heston, initial_guess, args=(observed_v, dt), bounds=bounds)
+        return result.x  # Return the estimated parameters
+    except Exception as e:
+        print(f"Error processing {ticker}: {e}")
+        return [None, None, None, None]
+
+# List of stocks in the universe
+universe = ['AAPL', 'MSFT', 'GOOG', 'KO']  # Replace with your stock tickers
+
+# Compile results into a DataFrame
+results = []
+for ticker in universe:
+    params = estimate_heston_parameters(ticker)
+    results.append({
+        'Ticker': ticker,
+        'Kappa': params[0],
+        'Theta': params[1],
+        'Sigma_v': params[2],
+        'V0': params[3]
+    })
+
+# Convert to Pandas DataFrame
+results_df = pd.DataFrame(results)
+print(results_df)
 
 
-
-def neg_log_likelihood(params, returns):
-    mu, sigma = params[0], params[1]
-    n = len(returns)
-    log_likelihood = (
-        -n / 2 * np.log(2 * np.pi)
-        - n / 2 * np.log(sigma**2)
-        - np.sum((returns - mu)**2) / (2 * sigma**2)
-    )
-    return -log_likelihood
-
-
-result = minimize(
-    neg_log_likelihood,
-    initial_guess,
-    args=(log_returns,),
-    bounds=[(-np.inf, np.inf), (1e-6, np.inf)]  # Ensure sigma > 0
-)
-
-mu_mle, sigma_mle = result.x
-
-mu_annualized = mu_mle * 252
-
-print(f"Estimated mu (daily): {mu_mle}")
-print(f"Estimated mu (annualized): {mu_annualized}")
-print(f"Estimated sigma (daily): {sigma_mle}")
-print(f"Estimated sigma (annualized): {sigma_mle * np.sqrt(252)}")
-
-sample_mean = np.mean(log_returns)
-print(sample_mean)

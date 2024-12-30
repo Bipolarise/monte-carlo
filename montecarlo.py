@@ -8,7 +8,7 @@ from scipy.stats import norm
 from hmmlearn.hmm import GaussianHMM
 from scipy.stats import norm
 
-universe = ['NVDA', 'AAPL', 'GOOG']
+universe = ['NVDA', 'AAPL', 'KO']
 start = '2022-01-01'
 end = '2023-12-31'
 
@@ -98,33 +98,6 @@ def Geometric_Brownian_Motion(S_0, mu, T, dt, n_paths, v0, kappa, theta, sigma_v
         )
 
     return stock_paths, vol_paths
-
-
-def calculate_mu(universe_data):
-    """
-    Calculate drift (mu) for each stock in the universe.
-
-    Parameters:
-    universe_data: DataFrame
-        DataFrame where each column represents a stock's adjusted closing prices.
-
-    Returns:
-    mu_values: dict
-        Dictionary where keys are stock tickers and values are drift (mu) estimates.
-    """
-    
-    mu_values = {}
-    
-    for ticker, prices in universe_data.items():
-        log_returns = np.log(prices / prices.shift(1)).dropna()
-        mu_log = log_returns.mean() * 252
-        
-        sigma = log_returns.std() * np.sqrt(252)
-        mu = mu_log + 0.5 * sigma ** 2
-        mu_values[ticker] = mu
-        
-    return mu_values
-
 
 def calculate_initial_variance(universe_data):
     """
@@ -287,12 +260,6 @@ def identify_hl_vol(historical_regimes, SP500_returns):
     
     group_0 = SP500_returns[historical_regimes[0]  == 0]
     group_1 = SP500_returns[historical_regimes[0]  == 1]
-    
-    print("Group 0:")
-    print(group_0)
-    
-    print("\n Group 1:")
-    print(group_1)
     
     g1_returns = SP500_returns.loc[group_1.index]
     g0_returns = SP500_returns.loc[group_0.index]
@@ -541,7 +508,7 @@ def download_prepare_data(universe, start, end):
 
 
 
-def negative_log_likelihood(params, returns):
+def negative_log_likelihood_gbm(params, returns):
     """
     Returns the negative log likelihood for Maximum Likelihood Estimation
     """
@@ -557,41 +524,127 @@ def negative_log_likelihood(params, returns):
     
     return -log_likelihood
 
-# Download the data and filter log returns
-all_data = download_prepare_data(universe=universe, start=start, end=end)
-log_returns = all_data.filter(like='Log Returns')
-
-results = []
-
-for stock in log_returns.columns:
-    stock_returns = log_returns[stock].dropna()  
-
-    # Initial guess for mu and sigma
-    initial_guess = [stock_returns.mean(), stock_returns.std()]
-
-    # Perform MLE using negative log-likelihood
-    result = minimize(
-        negative_log_likelihood,
-        initial_guess,
-        args=(stock_returns,),
-        bounds=[(-np.inf, np.inf), (1e-6, np.inf)] 
-    )
-
-    mu_mle, sigma_mle = result.x
-
-    results.append({
-        'Stock': stock.replace('_Log Returns', ''),  
-        'mu_daily': mu_mle,
-        'mu_annualized': mu_mle * 252,
-        'sigma_daily': sigma_mle,
-        'sigma_annualized': sigma_mle * np.sqrt(252) 
-    })
-
-results_df = pd.DataFrame(results)
-
-print(results_df)
-
+def calculate_mu(universe, start, end):
+    """
+    Calculates the GBM parameter drift using maximum likelihood estimation
     
+    Parameters:
+    universe: list
+        A list of the stocks to be analysed
+    start: str
+        A string for the start date
+    end: str
+        A string for the end date
+        
+    Returns:
+    results_df: pd DataFrame
+        A Pandas DataFrame containing the different mu's for each stock, along with its volatility
+    """
+    all_data = download_prepare_data(universe=universe, start=start, end=end)
+    log_returns = all_data.filter(like='Log Returns')
+
+    results = []
+
+    for stock in log_returns.columns:
+        stock_returns = log_returns[stock].dropna()  
+
+        # Initial guess for mu and sigma
+        initial_guess = [stock_returns.mean(), stock_returns.std()]
+
+        # Perform MLE using negative log-likelihood
+        result = minimize(
+            negative_log_likelihood_gbm,
+            initial_guess,
+            args=(stock_returns,),
+            bounds=[(-np.inf, np.inf), (1e-6, np.inf)] 
+        )
+
+        mu_mle, sigma_mle = result.x
+
+        results.append({
+            'Stock': stock.replace('_Log Returns', ''),  
+            'mu_daily': mu_mle,
+            'mu_annualized': mu_mle * 252,
+            'sigma_daily': sigma_mle,
+            'sigma_annualized': sigma_mle * np.sqrt(252) 
+        })
+
+    results_df = pd.DataFrame(results)
+    
+    return results_df
+
+# MU HAS BEEN ESTIMATED. ESTIMATE THE OTHER PARAMETERS AS WELL
+
+def simulate_heston_variance(kappa, theta, sigma_v, v0, dt, n_steps):
+    np.random.seed(42)  # For reproducibility
+    v = np.zeros(n_steps)
+    v[0] = v0
+    for t in range(1, n_steps):
+        dW_v = np.random.normal(0, np.sqrt(dt))  # Wiener increment
+        v[t] = v[t-1] + kappa * (theta - v[t-1]) * dt + sigma_v * np.sqrt(max(v[t-1], 0)) * dW_v
+        v[t] = max(v[t], 0)  
+    return v
+
+def log_likelihood_heston(params, observed_v, dt):
+    kappa, theta, sigma_v, v0 = params
+    n_steps = len(observed_v)
+    simulated_v = simulate_heston_variance(kappa, theta, sigma_v, v0, dt, n_steps)
+    ll = 0
+    for t in range(1, n_steps):
+        mu = simulated_v[t-1] + kappa * (theta - simulated_v[t-1]) * dt
+        variance = sigma_v**2 * simulated_v[t-1] * dt
+        variance = max(variance, 1e-10)  
+        ll += -0.5 * (np.log(2 * np.pi * variance) + (observed_v[t] - mu)**2 / variance)
+    return -ll
+
+def estimate_heston_parameters(ticker, start = start, end = end):
+    try:
+        
+        all_data = download_prepare_data([ticker], start=start, end=end)
+        log_returns = all_data.filter(like='Log Returns')
+
+        
+        variance = log_returns[f'{ticker}_Log Returns'].rolling(window=15).var()
+        observed_v = variance.dropna().values 
+        dt = 1 / 252  
+
+        initial_guess = [1.0, observed_v.mean(), observed_v.std(), observed_v[0]]  # [kappa, theta, sigma_v, v0]
+        bounds = [(0.01, 5), (0.001, 1), (0.01, 5), (0.001, 1)] 
+
+        # Perform optimization
+        result = minimize(log_likelihood_heston, initial_guess, args=(observed_v, dt), bounds=bounds)
+        return result.x  
+    except Exception as e:
+        print(f"Error processing {ticker}: {e}")
+        return [None, None, None, None]
+
+
+
+def all_params():
+    """
+    Combines the mu values for GBM and parameters for the Heston Volatility model
+    
+    Returns:
+    
+    """
+    mu_values = calculate_mu(universe = universe, start = start, end = end)
+    results = []
+    for ticker in universe:
+        params = estimate_heston_parameters(ticker)
+        results.append({
+            'Stock': ticker,
+            'Kappa': params[0],
+            'Theta': params[1],
+            'Sigma_v': params[2],
+            'V0': params[3]
+        })
+    results_df = pd.DataFrame(results)
+    
+    results_df['mu_daily'] = mu_values['mu_daily'].values
+    print(results_df)
+        
+all_params()
+
 def run_model():    
     # Download Real Data
 
@@ -615,7 +668,7 @@ def run_model():
     initial_guess = [2.0, realized_variance.mean(), 0.1]
     bounds = [(0.01, 5), (0.0001, 0.2), (0.01, 1)]
 
-    result = minimize(negative_log_likelihood, initial_guess, args=(realized_variance,), bounds=bounds)
+    result = minimize(negative_log_likelihood_gbm, initial_guess, args=(realized_variance,), bounds=bounds)
     kappa_est, theta_est, sigma_v_est = result.x
     print(f"Estimated Parameters:")
     print(f"  kappa: {kappa_est:.4f}")
