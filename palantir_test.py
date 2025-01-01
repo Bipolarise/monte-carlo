@@ -1,71 +1,56 @@
 import numpy as np
 import pandas as pd
-from scipy.optimize import minimize
-import yfinance as yf
+import matplotlib.pyplot as plt
 
-# Define the Heston simulation function
-def simulate_heston_variance(kappa, theta, sigma_v, v0, dt, n_steps):
-    np.random.seed(42)  # For reproducibility
-    v = np.zeros(n_steps)
-    v[0] = v0
-    for t in range(1, n_steps):
-        dW_v = np.random.normal(0, np.sqrt(dt))  # Wiener increment
-        v[t] = v[t-1] + kappa * (theta - v[t-1]) * dt + sigma_v * np.sqrt(max(v[t-1], 0)) * dW_v
-        v[t] = max(v[t], 0)  # Ensure non-negative variance
-    return v
+def heston_volatility_process(v0, kappa, theta, sigma_v, T, dt, n_paths):
+    n_steps = int(T / dt)
+    vol_paths = np.zeros((n_paths, n_steps + 1))
+    var_paths = np.zeros((n_paths, n_steps + 1))
+    
+    var_paths[:, 0] = v0
+    for i in range(1, n_steps + 1):
+        Z = np.random.normal(0, 1, size=n_paths)
+        var_paths[:, i] = var_paths[:, i - 1] + kappa * (theta - var_paths[:, i - 1]) * dt + sigma_v * np.sqrt(var_paths[:, i - 1]) * np.sqrt(dt) * Z
+        var_paths[:, i] = np.maximum(var_paths[:, i], 0)  # Ensure non-negative variance
+        vol_paths[:, i] = np.sqrt(var_paths[:, i])
+    
+    return vol_paths
 
-# Define the log-likelihood function
-def log_likelihood_heston(params, observed_v, dt):
-    kappa, theta, sigma_v, v0 = params
-    n_steps = len(observed_v)
-    simulated_v = simulate_heston_variance(kappa, theta, sigma_v, v0, dt, n_steps)
-    ll = 0
-    for t in range(1, n_steps):
-        mu = simulated_v[t-1] + kappa * (theta - simulated_v[t-1]) * dt
-        variance = sigma_v**2 * simulated_v[t-1] * dt
-        variance = max(variance, 1e-10)  # Prevent division by zero or log(0)
-        ll += -0.5 * (np.log(2 * np.pi * variance) + (observed_v[t] - mu)**2 / variance)
-    return -ll
+def geometric_brownian_motion(S_0, mu, T, dt, n_paths, vol_paths):
+    n_steps = int(T / dt)
+    stock_paths = np.zeros((n_paths, n_steps + 1))
+    stock_paths[:, 0] = S_0
 
-# Prepare stock data
-def prepare_data(ticker, start, end):
-    data = yf.download(ticker, start=start, end=end)['Adj Close']
-    data = pd.DataFrame(data)
-    data['Log Returns'] = np.log(data['Adj Close'] / data['Adj Close'].shift(1))
-    data['Variance'] = data['Log Returns'].rolling(window=15).std()**2  # Rolling variance
-    return data.dropna()
+    for i in range(1, n_steps + 1):
+        Z = np.random.normal(0, 1, size=n_paths)
+        stock_paths[:, i] = stock_paths[:, i - 1] * np.exp(
+            (mu - 0.5 * vol_paths[:, i - 1]**2) * dt +
+            vol_paths[:, i - 1] * Z * np.sqrt(dt)
+        )
+    return stock_paths
 
-# Function to estimate parameters for a single stock
-def estimate_heston_parameters(ticker, start='2023-01-01', end='2024-01-01'):
-    try:
-        data = prepare_data(ticker, start, end)
-        observed_v = data['Variance'].values
-        dt = 1 / 252  # Daily time steps
-        initial_guess = [1.0, observed_v.mean(), observed_v.std(), observed_v[0]]  # [kappa, theta, sigma_v, v0]
-        bounds = [(0.01, 5), (0.001, 1), (0.01, 5), (0.001, 1)]  # Parameter bounds
-        result = minimize(log_likelihood_heston, initial_guess, args=(observed_v, dt), bounds=bounds)
-        return result.x  # Return the estimated parameters
-    except Exception as e:
-        print(f"Error processing {ticker}: {e}")
-        return [None, None, None, None]
+# Parameters
+S_0 = 150  # Initial stock price for AAPL
+mu = 0.08  # Positive drift for upward trend
+T = 1.0  # Time horizon (1 year)
+dt = 1 / 252  # Daily time step
+n_paths = 100  # Number of simulation paths
+v0 = 0.04  # Initial variance (20% annualized volatility)
+kappa = 2.0  # Mean reversion speed
+theta = 0.04  # Long-term variance (20% annualized volatility)
+sigma_v = 0.3  # Volatility of volatility
 
-# List of stocks in the universe
-universe = ['AAPL', 'MSFT', 'GOOG', 'KO']  # Replace with your stock tickers
+# Simulate volatility paths
+vol_paths = heston_volatility_process(v0, kappa, theta, sigma_v, T, dt, n_paths)
 
-# Compile results into a DataFrame
-results = []
-for ticker in universe:
-    params = estimate_heston_parameters(ticker)
-    results.append({
-        'Ticker': ticker,
-        'Kappa': params[0],
-        'Theta': params[1],
-        'Sigma_v': params[2],
-        'V0': params[3]
-    })
+# Simulate stock prices
+stock_paths = geometric_brownian_motion(S_0, mu, T, dt, n_paths, vol_paths)
 
-# Convert to Pandas DataFrame
-results_df = pd.DataFrame(results)
-print(results_df)
-
-
+# Plot results
+plt.figure(figsize=(12, 6))
+for i in range(n_paths):
+    plt.plot(stock_paths[i, :], alpha=0.7, linewidth=0.7)
+plt.title("Simulated Stock Prices for AAPL with Trend")
+plt.xlabel("Time Steps")
+plt.ylabel("Price ($)")
+plt.show()

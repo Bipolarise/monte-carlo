@@ -12,7 +12,6 @@ universe = ['NVDA', 'AAPL', 'KO']
 start = '2022-01-01' # For Training data
 end = '2024-12-01' # For Training Data
 
-
 # NOTE: Recommended Large Training Size (10+ years)
 
 def heston_volatility_process(v0, kappa, theta, sigma_v, T, dt, n_paths):
@@ -34,16 +33,19 @@ def heston_volatility_process(v0, kappa, theta, sigma_v, T, dt, n_paths):
                 
     NOTE: Need to incorporate rho, mu
     """
-    n_steps = int(T / dt)
+    
+    n_steps = int(T/dt)
     vol_paths = np.zeros((n_paths, n_steps + 1))
     var_paths = np.zeros((n_paths, n_steps + 1))
     
-    var_paths[:, 0] = v0
+    var_paths[:,0] = v0
+
     for i in range(1, n_steps + 1):
-        Z = np.random.normal(0, 1, size=n_paths)
-        var_paths[:, i] = var_paths[:, i - 1] + kappa * (theta - var_paths[:, i - 1]) * dt + sigma_v * np.sqrt(var_paths[:, i - 1]) * np.sqrt(dt) * Z
-        var_paths[:, i] = np.maximum(var_paths[:, i], 0)  # Ensure non-negative variance
-        vol_paths[:, i] = np.sqrt(var_paths[:, i])
+        Z = np.random.normal(0,1, size = n_paths)
+        var_paths[:,i] = var_paths[:,i-1] + kappa * (theta - var_paths[:,i-1]) * dt + sigma_v * np.sqrt(var_paths[:,i-1]) * np.sqrt(dt) * Z
+        var_paths[:,i] = np.maximum(var_paths[:,i], 0)
+        
+        vol_paths[:,i] = np.sqrt(var_paths[:,i])
     
     return vol_paths
 
@@ -166,7 +168,7 @@ def simulate_HMM_Regime(start = start, end = end):
 hmm, historical_regimes, SP500_returns, X = simulate_HMM_Regime(start = '2000-01-01', end = '2023-01-01')
 
 
-def simulate_future_regimes(hmm, n_steps, last_date = end):
+def simulate_future_regimes(hmm, n_steps, last_date = '2023-01-01'):
     """
     Simulates/Predicts future market regimes using a trained Hidden Markov Model from probabilities trained from
     simulate_HMM_Regime
@@ -194,9 +196,11 @@ def simulate_future_regimes(hmm, n_steps, last_date = end):
     return future_regimes
 
 
+future_regimes = simulate_future_regimes(hmm, n_steps = 200)
+
 # NEED TO IDENTIFY WHETHER 0 OR 1 IS HIGH VOL
 
-def identify_hl_vol(historical_regimes, SP500_returns, n_steps):
+def identify_hl_vol(historical_regimes, SP500_returns):
     """
     Identifies whether 0 or 1 is high or low volatility. Converts the existing future_regimes Series into either "High Volatility"
     or "Low Volatility"
@@ -210,7 +214,6 @@ def identify_hl_vol(historical_regimes, SP500_returns, n_steps):
     
     NOTE: Prediction Series length must align with the SP500_returns length
     """
-    future_regimes = simulate_future_regimes(hmm, n_steps)
     
     historical_regimes.index = SP500_returns.index
     
@@ -258,55 +261,45 @@ def simulate_stock_prices(S0, T, dt, n_paths, high_vol_params, low_vol_params):
     high_vol_params: Parameters for Heston Volatility Model (obtained dynamically for each stock)
     low_vol_params : Parameters for GBM model (obtained dynamically for each stock)
     
-    Returns:
-    pd.DataFrame(simulated_prices): Pandas DataFrame
-        A Pandas DataFrame for each simulation for the particular stock
-    
     NOTE: Parameters are sourced dynamically from `all_params`.
     """
-    n_steps = int(T / dt)
-        
-    future_volatility = identify_hl_vol(historical_regimes, SP500_returns, n_steps)
-    print(f"Length of Future Volatility Series:{len(future_volatility)}")
-    print(f"Future Volatility Series:{future_volatility}")
-
-    print(T, dt)
-
-    if len(future_volatility) != n_steps:
-        raise ValueError(f"Length of future_volatility ({len(future_volatility)}) does not match n_steps ({n_steps}).")
-
+    future_volatility = identify_hl_vol(historical_regimes, SP500_returns)
+    
+    n_steps = int(T/dt)
     simulated_prices = np.zeros((n_paths, n_steps + 1))
     simulated_prices[:, 0] = S0
-
-    for t in range(1, n_steps + 1):  # Loop through time steps
-        regime = future_volatility.iloc[t - 1]  # Align regime with t
-
+    
+    for t, regime in enumerate(future_volatility):
         if regime == "High Volatility":
+            # Use high volatility parameters dynamically for the specific stock
             kappa = high_vol_params['Kappa']
             theta = high_vol_params['Theta']
             sigma_v = high_vol_params['Sigma_v']
             v0 = high_vol_params['V0']
 
             vol_paths = heston_volatility_process(v0, kappa, theta, sigma_v, T, dt, n_paths)
-            Z = np.random.normal(size=n_paths)
-            simulated_prices[:, t] = simulated_prices[:, t - 1] * np.exp(
-                (-0.5 * vol_paths[:, t - 1]**2) * dt +
-                vol_paths[:, t - 1] * Z * np.sqrt(dt)
-            )
-
+            for i in range(1, n_steps + 1):
+                Z = np.random.normal(size=n_paths)
+                simulated_prices[:, i] = simulated_prices[:, i - 1] * np.exp(
+                    (-0.5 * vol_paths[:, i - 1] ** 2) * dt +
+                    vol_paths[:, i - 1] * Z * np.sqrt(dt)
+                )
         elif regime == "Low Volatility":
             mu = low_vol_params['mu']
-            Z = np.random.normal(size=n_paths)
-            simulated_prices[:, t] = simulated_prices[:, t - 1] * np.exp(
-                (mu - 0.5 * 0.04) * dt +  # Assuming fixed variance for low vol
-                np.sqrt(0.04) * Z * np.sqrt(dt)
-            )
-        else:
-            raise ValueError(f"Unexpected regime: {regime}")
-
+            stock_paths, _ = Geometric_Brownian_Motion(S0, mu, T, dt, n_paths,
+                                                        v0=high_vol_params["V0"],
+                                                        theta=high_vol_params["Theta"],
+                                                        sigma_v=high_vol_params["Sigma_v"],
+                                                        kappa=high_vol_params["Kappa"])
+            simulated_prices[:, t+1] = stock_paths[:, t+1]
+    
     return pd.DataFrame(simulated_prices)
 
-
+    
+'''simulated_prices = simulate_stock_prices(S0, T, dt, n_paths, high_vol_params, gbm_params)
+final_prices = simulated_prices.iloc[:,-1:]
+final_prices.index = future_regimes.index
+'''
 def convergence_analysis(simulated_prices, future_regimes=None):
     """
     Performs convergence analysis on the performed Monte Carlo simulation to estimate the final stock price at the end of the period.
@@ -365,7 +358,7 @@ def convergence_analysis(simulated_prices, future_regimes=None):
     return lower_bound, upper_bound, final_mean
 
 
-def calculate_option_price(final_mean, X, r, T):
+def calculate_option_price(final_mean):
     """
     Calculates the price of the option given the predicted price
     
@@ -374,46 +367,58 @@ def calculate_option_price(final_mean, X, r, T):
         The final mean of the Monte Carlo Simulation of Stock Prices
     """
 
-    option_payoff = np.max(final_mean - X, 0)
+    option_payoff = np.max(final_mean - S0, 0)
     option_price = option_payoff * np.exp(-r*T)
     
     return option_price
 
-def graphing(simulated_prices):
-    plt.figure(figsize=(12, 7))
+'''plt.figure(figsize=(12, 7))
 
-    for i in range(simulated_prices.shape[0]):
-        plt.plot(simulated_prices.iloc[i, :], alpha=0.7)
-    plt.title("100 Simulations of Stock Prices")
-    plt.ylabel("Price in $")
-    plt.xlabel("Time Steps")
-    plt.show()
+for i in range(simulated_prices.shape[0]):
+    plt.plot(simulated_prices.iloc[i, :], alpha=0.7)
+plt.title("100 Simulations of Stock Prices")
+plt.ylabel("Price in $")
+plt.xlabel("Time Steps")
+plt.show()'''
 
 # THIS IS A TEST FUNCTION (NOT COMPLETE)
-def monte_carlo_simulation(simulated_prices, n_batches, future_regimes=None):
+def monte_carlo_simulation(n_batches, future_regimes = None):
     """
     Runs n-batches of Monte-Carlo Convergence Analyses. 
     
     Parameters:
-    simulated_prices: pd.DataFrame
-        Simulated stock prices to analyze.
     n_batches: int
         The number of batches to be simulated. For more accurate results, it is recommended that n_batches > 40
+    
+    NOTE: Each batch is of 100 simulations, i.e n_batches = 40 will simulate 4000. Changing the time frame is different. Changing 
+    the number of simulations is comparable to the number of 'lines' the graph will have if graphed.
     
     Returns:
     mean_option_price
     """
+        
+    
     all_final_prices = []
+    option_prices = []
     
     for _ in range(0, n_batches + 1):
-        _, _, final_mean = convergence_analysis(simulated_prices, future_regimes=future_regimes)
+        _, _, final_mean = convergence_analysis(simulated_prices, future_regimes=None)
         all_final_prices.append(final_mean)
         
     final_prices_mean = np.mean(all_final_prices)
     final_prices_std = np.std(all_final_prices)
     
-    return all_final_prices, final_prices_mean, final_prices_std
-
+    for price in all_final_prices:
+        option_price = calculate_option_price(price)
+        option_prices.append(option_price)
+        
+    mean_option_price = np.mean(option_prices)
+    
+    final_prices_mean = pd.Series(all_final_prices)
+    option_prices = pd.Series(option_prices)
+    
+    
+    return mean_option_price
 
 def print_information():
     S0 = 100  
@@ -567,16 +572,9 @@ def estimate_heston_parameters(ticker, start = start, end = end):
 
 
 
-def all_params(universe, start, end):
+def all_params():
     """
     Combines the mu values for GBM and parameters for the Heston Volatility model
-    
-    Parameters:
-    universe: list
-        A list of stocks to be analysed
-    start: str
-        Start Date
-    end: end date
     
     Returns:
     results_df: Pandas DataFrame
@@ -587,7 +585,7 @@ def all_params(universe, start, end):
     adj_close = all_data.filter(like='Adj Close').tail(1)
     last_stock_price = adj_close.iloc[-1].values
     
-    mu_values = calculate_mu(universe, start, end)
+    mu_values = calculate_mu(universe = universe, start = start, end = end)
     results = []
     for ticker in universe:
         params = estimate_heston_parameters(ticker)
@@ -605,41 +603,13 @@ def all_params(universe, start, end):
     
     return results_df
 
-def calculate_strike_price():
-    """
-    Calculates the strike price for +- % away from the current price
-    
-    Parameters:
-        S0: float
-    The current price of the stock at the end of its test period
-    
-    Returns:
-    
-    """
 
 def run_model():    
     """
     Integrates all parameters from the `all_params` function into the Monte Carlo convergence models.
     """
-    global start, end, universe
-    
-    universe = ['KO', 'PEP']
-    
-    # Parameters for Monte Carlo Simulation
-    n_paths = 100  # Number of simulation paths
-    T = 0.5  # Time to Expiration (Into the Future)
-    dt = 1 / 252  # Daily time step
-    r = 0.05
-    start, end = '2020-01-01', '2023-01-01' # FOR MODEL TRAINING
-    
-    print("Calculating Parameters...")
-    
-    model_parameters = all_params(universe, start ,end)
-    print(model_parameters)
-    
-    strike_prices = {}
-    
-    mean_option_prices = {}
+    # Retrieve model parameters for all stocks
+    model_parameters = all_params()
 
     for _, row in model_parameters.iterrows():
         stock = row['Stock']
@@ -653,45 +623,28 @@ def run_model():
         print(f"Running model for {stock}:")
         print(f"  Kappa: {kappa:.4f}, Theta: {theta:.6f}, Sigma_v: {sigma_v:.6f}, V0: {v0:.6f}, Mu: {mu_daily:.6f}, Starting Price: {starting_price:.2f}")
 
-        # Simulate stock prices using the simulate_stock_prices function
-        high_vol_params = {
-            'Kappa': kappa,
-            'Theta': theta,
-            'Sigma_v': sigma_v,
-            'V0': v0
-        }
+        # Use parameters in the Monte Carlo model
+        n_paths = 100  # Number of simulation paths
+        T = 1.0  # 1 year
+        dt = 1 / 252  # Daily time step
 
-        low_vol_params = {
-            'mu': mu_daily
-        }
-
-        simulated_prices = simulate_stock_prices(
-            S0=starting_price,
+        # Simulate stock prices using the Heston model
+        simulated_prices, simulated_vols = Geometric_Brownian_Motion(
+            S_0=starting_price,
+            mu=mu_daily,
             T=T,
             dt=dt,
             n_paths=n_paths,
-            high_vol_params=high_vol_params,
-            low_vol_params=low_vol_params
+            v0=v0,
+            kappa=kappa,
+            theta=theta,
+            sigma_v=sigma_v
         )
-        
-        strike_prices[stock] = row['Starting Price'] * 0.9 #10% Down from current price
-        
-        print(f"Simulated Prices for {stock}")
-        print(simulated_prices)
 
-        # Perform Monte Carlo analysis
-        n_batches = 50  # Example number of Monte Carlo batches
-        all_final_prices, _, _ = monte_carlo_simulation(simulated_prices=simulated_prices, n_batches=n_batches, future_regimes=None)
-        
-        # Calculate option prices
-        option_prices = []
-        for price in all_final_prices:
-            option_price = calculate_option_price(price, X = strike_prices[stock], r=r, T=T)  # Use starting_price directly
-            option_prices.append(option_price)
-        
-        # Calculate mean option price
-        mean_option_price = np.mean(option_prices)
-        mean_option_prices[stock] = mean_option_price
+        # Perform convergence analysis
+        lower_bound, upper_bound, final_mean = convergence_analysis(pd.DataFrame(simulated_prices))
+        print(f"  Final Mean: {final_mean:.2f}")
+        print(f"  95% Confidence Interval: ({lower_bound.iloc[-1]:.2f}, {upper_bound.iloc[-1]:.2f})")
 
         # Optional plotting
         plt.figure(figsize=(10, 6))
@@ -699,19 +652,13 @@ def run_model():
         plt.title(f"Simulated Prices for {stock}")
         plt.xlabel("Time Steps")
         plt.ylabel("Price ($)")
-        # plt.show()
-    
-    for stock in mean_option_prices:
-        print(f"Mean Option Price for {stock}: {mean_option_price}")
-
+        plt.show()
 
 run_model()
 
 
 
 
-
-### NOTE: NEED TO FEED THE CORRECT PARAMETERS TO SIMULATE_STOCK_PRICES
 
 #123456
 # cd monte-carlo

@@ -9,11 +9,13 @@ from hmmlearn.hmm import GaussianHMM
 from scipy.stats import norm
 
 universe = ['NVDA', 'AAPL', 'KO']
-start = '2022-01-01'
-end = '2023-12-31'
+start = '2022-01-01' # For Training data
+end = '2023-12-31' # For Training Data
+
+# NOTE: Recommended Large Training Size (10+ years)
 
 # Exemplar Testing Constants
-gbm_params = {
+'''gbm_params = {
     "mu": 0.05  # Drift
 }
 
@@ -22,15 +24,13 @@ high_vol_params = {
     "kappa": 2.0,
     "theta": 0.04,
     "sigma_v": 0.2
-}
+}'''
 
-S0 = 100  # Starting stock price
+'''S0 = 100  # Starting stock price
 T = 2.0  # 1 year
 dt = 0.01  # Time step size
 n_paths = 100  # Number of paths
-r = 0.05 # Risk Free Rate
-
-# Heston Volatility Model
+r = 0.05 # Risk Free Rate'''
 
 def heston_volatility_process(v0, kappa, theta, sigma_v, T, dt, n_paths):
     """
@@ -79,7 +79,7 @@ def Geometric_Brownian_Motion(S_0, mu, T, dt, n_paths, v0, kappa, theta, sigma_v
     T       : Terminal time
     dt      : Time step.
     n       : Number of simulation paths.
-    v0      :
+    v0      : Initial Variance
 
     Returns:
     vol_paths : Simulated volatility paths (square root of variance).
@@ -98,29 +98,6 @@ def Geometric_Brownian_Motion(S_0, mu, T, dt, n_paths, v0, kappa, theta, sigma_v
         )
 
     return stock_paths, vol_paths
-
-def calculate_initial_variance(universe_data):
-    """
-    Calculate initial variance (sigma^2) for each stock in the universe.
-    
-    Parameters:
-    universe_data: DataFrame - Columns are tickers, rows are dates, and values are prices.
-    
-    Returns:
-    Dictionary of variances for each stock.
-    """
-    initial_variances = {}
-    
-    for ticker in universe_data.columns:
-        
-        prices = universe_data[ticker]
-        log_returns = np.log(prices / prices.shift(1)).dropna()
-        
-        variance = log_returns.var()
-        
-        initial_variances[ticker] = variance
-    
-    return initial_variances
 
 def calculate_log_returns(universe_data):
     for ticker in universe_data.columns:
@@ -179,7 +156,7 @@ def use_BSM_Compare():
         print(option_prices)
 
 
-def simulate_HMM_Regime(start = '2000-01-01', end = '2023-01-01'):
+def simulate_HMM_Regime(start = start, end = end):
     """
     Simulates the Hidden Markov Model for Market Regime Prediction. The model will output a binary variable for each day, 
     indicating whether it is high or low volatility. It will be trained with S&P 500 data. 
@@ -369,6 +346,7 @@ def convergence_analysis(simulated_prices, future_regimes=None):
     """
 
     # Extract final prices
+    simulated_prices = pd.DataFrame(simulated_prices)
     final_prices = simulated_prices.iloc[:, -1]  
 
     if future_regimes is not None:
@@ -404,6 +382,7 @@ def convergence_analysis(simulated_prices, future_regimes=None):
     # plt.show()
 
     return lower_bound, upper_bound, final_mean
+
 
 def calculate_option_price(final_mean):
     """
@@ -507,7 +486,6 @@ def download_prepare_data(universe, start, end):
     return all_data.dropna()  
 
 
-
 def negative_log_likelihood_gbm(params, returns):
     """
     Returns the negative log likelihood for Maximum Likelihood Estimation
@@ -573,8 +551,6 @@ def calculate_mu(universe, start, end):
     
     return results_df
 
-# MU HAS BEEN ESTIMATED. ESTIMATE THE OTHER PARAMETERS AS WELL
-
 def simulate_heston_variance(kappa, theta, sigma_v, v0, dt, n_steps):
     np.random.seed(42)  # For reproducibility
     v = np.zeros(n_steps)
@@ -625,8 +601,14 @@ def all_params():
     Combines the mu values for GBM and parameters for the Heston Volatility model
     
     Returns:
-    
+    results_df: Pandas DataFrame
+        A Pandas DataFrame containing all parameters required for the GBM and Heston Volatility
     """
+    
+    all_data = download_prepare_data(universe = universe, start = start, end = end)
+    adj_close = all_data.filter(like='Adj Close').tail(1)
+    last_stock_price = adj_close.iloc[-1].values
+    
     mu_values = calculate_mu(universe = universe, start = start, end = end)
     results = []
     for ticker in universe:
@@ -641,43 +623,66 @@ def all_params():
     results_df = pd.DataFrame(results)
     
     results_df['mu_daily'] = mu_values['mu_daily'].values
-    print(results_df)
-        
-all_params()
+    results_df['Starting Price'] = last_stock_price
+    
+    return results_df
+
 
 def run_model():    
-    # Download Real Data
+    """
+    Integrates all parameters from the `all_params` function into the Monte Carlo convergence models.
+    """
+    universe = ['NVDA', 'AAPL', 'KO']
+    start = '2022-01-01'
+    end = '2023-12-31'
 
-    universe = [
-        'NVDA', 'AAPL', 'GOOG'
-    ]
+    # Retrieve model parameters for all stocks
+    model_parameters = all_params()
 
-    all_data = {}
-    start = '2023-12-8'
-    end = '2024-12-8'
+    for _, row in model_parameters.iterrows():
+        stock = row['Stock']
+        kappa = row['Kappa']
+        theta = row['Theta']
+        sigma_v = row['Sigma_v']
+        v0 = row['V0']
+        mu_daily = row['mu_daily']
+        starting_price = row['Starting Price']
 
-    for stock in universe:
-        stock_data = yf.download(stock, start = start, end = end)['Adj Close']
-        all_data[stock] = stock_data
-        
-    all_data = pd.DataFrame(all_data)
+        print(f"Running model for {stock}:")
+        print(f"  Kappa: {kappa:.4f}, Theta: {theta:.6f}, Sigma_v: {sigma_v:.6f}, V0: {v0:.6f}, Mu: {mu_daily:.6f}, Starting Price: {starting_price:.2f}")
 
-    log_returns = calculate_log_returns(all_data)
-    realized_variance = log_returns ** 2
+        # Use parameters in the Monte Carlo model
+        n_paths = 100  # Number of simulation paths
+        T = 1.0  # 1 year
+        dt = 1 / 252  # Daily time step
 
-    initial_guess = [2.0, realized_variance.mean(), 0.1]
-    bounds = [(0.01, 5), (0.0001, 0.2), (0.01, 1)]
+        # Simulate stock prices using the Heston model
+        simulated_prices, simulated_vols = Geometric_Brownian_Motion(
+            S_0=starting_price,
+            mu=mu_daily,
+            T=T,
+            dt=dt,
+            n_paths=n_paths,
+            v0=v0,
+            kappa=kappa,
+            theta=theta,
+            sigma_v=sigma_v
+        )
 
-    result = minimize(negative_log_likelihood_gbm, initial_guess, args=(realized_variance,), bounds=bounds)
-    kappa_est, theta_est, sigma_v_est = result.x
-    print(f"Estimated Parameters:")
-    print(f"  kappa: {kappa_est:.4f}")
-    print(f"  theta: {theta_est * np.sqrt(252):.6f}")
-    print(f"  sigma_v: {sigma_v_est:.6f}")
-    
+        # Perform convergence analysis
+        lower_bound, upper_bound, final_mean = convergence_analysis(pd.DataFrame(simulated_prices))
+        print(f"  Final Mean: {final_mean:.2f}")
+        print(f"  95% Confidence Interval: ({lower_bound.iloc[-1]:.2f}, {upper_bound.iloc[-1]:.2f})")
 
-    # for ticker, mu in mu_values.items():
-    #     print(f"{ticker}: mu = {mu:.6f}")
+        # Optional plotting
+        plt.figure(figsize=(10, 6))
+        plt.plot(simulated_prices.T, alpha=0.3)
+        plt.title(f"Simulated Prices for {stock}")
+        plt.xlabel("Time Steps")
+        plt.ylabel("Price ($)")
+        plt.show()
+
+run_model()
 
 
 
