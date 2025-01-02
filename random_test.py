@@ -7,6 +7,8 @@ from scipy.optimize import minimize
 from scipy.stats import norm
 from hmmlearn.hmm import GaussianHMM
 from scipy.stats import norm
+import pandas_datareader.data as pdr
+from datetime import datetime
 
 universe = ['NVDA', 'AAPL', 'KO']
 start = '2022-01-01' # For Training data
@@ -77,7 +79,7 @@ def Geometric_Brownian_Motion(S_0, mu, T, dt, n_paths, v0, kappa, theta, sigma_v
             vol_paths[:, i - 1] * Z * np.sqrt(dt)
         )
 
-    return stock_paths, vol_paths
+    return stock_paths
 
 def calculate_log_returns(universe_data):
     for ticker in universe_data.columns:
@@ -98,6 +100,9 @@ def Black_Scholes_Compare(S_t, K, r, t, sigma):
     r       : Current risk free rate
     t       : Time to expiration (years)
     sigma   : Current volatility of underlying asset
+    
+    Returns:
+    C       : The call price of the option
     """
     
     d1 = (np.log(S_t/K) + (r + sigma ** 2 / 2) * t) / (sigma * np.sqrt(t))
@@ -108,32 +113,20 @@ def Black_Scholes_Compare(S_t, K, r, t, sigma):
     return C
 
 
-def use_BSM_Compare():
-    if __name__ == "__main__":
-        
-        tickers = ['AAPL', 'MSFT', 'GOOGL']  
+def use_BSM_Compare(ticker, strike_prices, risk_free_rate, time_to_expiration, volatility):
 
-        stock_data = yf.download(tickers, start="2023-01-01", end="2023-12-31")
-        adj_close_prices = stock_data['Adj Close'].iloc[-1]
+    stock_data = yf.download(ticker, start=start, end = end)
+    adj_close_prices = stock_data['Adj Close'].iloc[-1]
 
-        # Define test data
-        strike_prices = pd.Series([240, 300, 150], index=tickers)  # Example strike prices
-        risk_free_rate = 0.01
-        time_to_expiration = 1.0
-        volatility = 0.2
+    option_price = Black_Scholes_Compare(
+        S_t=adj_close_prices,
+        K=strike_prices,
+        r=risk_free_rate,
+        t=time_to_expiration,
+        sigma=volatility
+    )
 
-       
-        option_prices = Black_Scholes_Compare(
-            S_t=adj_close_prices,
-            K=strike_prices,
-            r=risk_free_rate,
-            t=time_to_expiration,
-            sigma=volatility
-        )
-
-        
-        print("Option Prices:")
-        print(option_prices)
+    return option_price
 
 
 def simulate_HMM_Regime(start = start, end = end):
@@ -267,10 +260,8 @@ def simulate_stock_prices(S0, T, dt, n_paths, high_vol_params, low_vol_params):
     n_steps = int(T / dt)
         
     future_volatility = identify_hl_vol(historical_regimes, SP500_returns, n_steps)
-    print(f"Length of Future Volatility Series:{len(future_volatility)}")
-    print(f"Future Volatility Series:{future_volatility}")
-
-    print(T, dt)
+    # print(f"Length of Future Volatility Series:{len(future_volatility)}")
+    # print(f"Future Volatility Series:{future_volatility}")
 
     if len(future_volatility) != n_steps:
         raise ValueError(f"Length of future_volatility ({len(future_volatility)}) does not match n_steps ({n_steps}).")
@@ -367,7 +358,7 @@ def convergence_analysis(simulated_prices, future_regimes=None):
 
 def calculate_option_price(final_mean, X, r, T):
     """
-    Calculates the price of the option given the predicted price
+    Calculates the price of the option given the predicted price under the no arbitrage pricing theory
     
     Parameters:
     final_mean: int
@@ -377,7 +368,10 @@ def calculate_option_price(final_mean, X, r, T):
     option_payoff = np.max(final_mean - X, 0)
     option_price = option_payoff * np.exp(-r*T)
     
-    return option_price
+    short_option_payoff = np.max(X - final_mean, 0)
+    short_option_price = short_option_payoff * np.exp(r*T)
+    
+    return option_price, short_option_price
 
 def graphing(simulated_prices):
     plt.figure(figsize=(12, 7))
@@ -605,41 +599,61 @@ def all_params(universe, start, end):
     
     return results_df
 
-def calculate_strike_price():
-    """
-    Calculates the strike price for +- % away from the current price
-    
-    Parameters:
-        S0: float
-    The current price of the stock at the end of its test period
-    
-    Returns:
-    
-    """
 
 def run_model():    
     """
-    Integrates all parameters from the `all_params` function into the Monte Carlo convergence models.
+    Integrates all parameters from the `all_params` function into the Monte Carlo convergence models. Calls functions in order
+    to calculate the final estimated option price for the stock, given the parameters.
+    
+    Returns:
+        all_option_prices: pd DataFrame
+    A DataFrame that contains the model's predicted option prices.
+    
+    NOTE: There are many parameters in this model you can change. 
+    - universe: 
+        Change the stocks you wish to analyse
+    - option_premium (or discount): 
+        Change the strike price
+    - T: 
+        Change the time to expiration. Note that this time follows right after your training period.
+    - start:
+        Change when you want to start training the model (for stock prices)
+    - end:
+        Change when you want to finish training the model (for stock prices). Again, note that the model will begin 'predicting'
+        stock changes right after this end date
+    
     """
     global start, end, universe
     
-    universe = ['KO', 'PEP']
+    universe = ['AAPL']
+    option_premium = 0.1
+    
+    treasury_start_date = datetime(2024, 1, 1)
+    treasury_end_date = datetime(2024, 12, 20)
+    
+    risk_free_data = pdr.get_data_fred('DGS10', treasury_start_date, treasury_end_date)  # DGS10: 10-Year Treasury
+    risk_free_data = risk_free_data / 100  # Convert from percentage to decimal
     
     # Parameters for Monte Carlo Simulation
-    n_paths = 100  # Number of simulation paths
-    T = 0.5  # Time to Expiration (Into the Future)
+    n_paths = 120  # Number of simulation paths
+    T = 1/73  # Time to Expiration (Into the Future, in years)
     dt = 1 / 252  # Daily time step
-    r = 0.05
-    start, end = '2020-01-01', '2023-01-01' # FOR MODEL TRAINING
+    r = risk_free_data.tail(1).values
+    start, end = '2020-01-01', '2024-12-24' # FOR MODEL TRAINING (DATA MUST EXIST)
+    
+    total_days = T * 365.25
+    months = int(total_days // 30.44)
+    days = int(total_days % 30.44)
     
     print("Calculating Parameters...")
     
     model_parameters = all_params(universe, start ,end)
-    print(model_parameters)
+    print(f"Model Parameters for Each Stock:\n{model_parameters}")
     
     strike_prices = {}
     
     mean_option_prices = {}
+    short_mean_option_prices = {}
 
     for _, row in model_parameters.iterrows():
         stock = row['Stock']
@@ -674,7 +688,8 @@ def run_model():
             low_vol_params=low_vol_params
         )
         
-        strike_prices[stock] = row['Starting Price'] * 0.9 #10% Down from current price
+        # strike_prices[stock] = row['Starting Price'] * (1 + option_premium) #10% Down from current price
+        strike_prices[stock] = 100
         
         print(f"Simulated Prices for {stock}")
         print(simulated_prices)
@@ -685,13 +700,20 @@ def run_model():
         
         # Calculate option prices
         option_prices = []
+        short_option_prices = []
+        
         for price in all_final_prices:
-            option_price = calculate_option_price(price, X = strike_prices[stock], r=r, T=T)  # Use starting_price directly
+            option_price, short_option_price = calculate_option_price(price, X = strike_prices[stock], r=r, T=T)  # Use starting_price directly
             option_prices.append(option_price)
+
+            short_option_prices.append(short_option_price)
         
         # Calculate mean option price
         mean_option_price = np.mean(option_prices)
         mean_option_prices[stock] = mean_option_price
+        
+        short_mean_option_price = np.mean(short_option_prices)
+        short_mean_option_prices[stock] = short_mean_option_price
 
         # Optional plotting
         plt.figure(figsize=(10, 6))
@@ -700,9 +722,28 @@ def run_model():
         plt.xlabel("Time Steps")
         plt.ylabel("Price ($)")
         # plt.show()
+        
+    mean_option_prices = pd.Series(mean_option_prices)
+    short_mean_option_prices = pd.Series(short_mean_option_prices)
+    all_option_prices = pd.concat([mean_option_prices, short_mean_option_prices], axis=1)
+
+    all_option_prices = all_option_prices.rename(columns={0: 'Call Price', 1: 'Put Price'})
     
-    for stock in mean_option_prices:
-        print(f"Mean Option Price for {stock}: {mean_option_price}")
+    
+
+    print(f"Mean Estimated Option Prices: \n{all_option_prices}")
+    print(f"Option Information:")
+    print(f"Time to Expiration: {months} months, {days} days")
+    
+    
+    for stock in universe:
+        # Calculate Black Scholes Pricing for comparison
+        bsm_price = use_BSM_Compare(stock, strike_prices[stock], r, T, high_vol_params['V0'])
+        print(f"Black Scholes Model Pricing for {stock}: ")
+        print(bsm_price)
+    
+
+    return all_option_prices
 
 
 run_model()

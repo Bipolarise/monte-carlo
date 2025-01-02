@@ -322,10 +322,10 @@ def simulate_stock_prices(S0, T, dt, n_paths, high_vol_params, low_vol_params):
             
     return pd.DataFrame(simulated_prices)
     
-simulated_prices = simulate_stock_prices(S0, T, dt, n_paths, high_vol_params, gbm_params)
+'''simulated_prices = simulate_stock_prices(S0, T, dt, n_paths, high_vol_params, gbm_params)
 final_prices = simulated_prices.iloc[:,-1:]
 final_prices.index = future_regimes.index
-
+'''
 def convergence_analysis(simulated_prices, future_regimes=None):
     """
     Performs convergence analysis on the performed Monte Carlo simulation to estimate the final stock price at the end of the period.
@@ -422,6 +422,8 @@ def monte_carlo_simulation(n_batches, future_regimes = None):
     Returns:
     mean_option_price
     """
+        
+    
     all_final_prices = []
     option_prices = []
     
