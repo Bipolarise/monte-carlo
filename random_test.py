@@ -559,7 +559,25 @@ def estimate_heston_parameters(ticker, start = start, end = end):
         print(f"Error processing {ticker}: {e}")
         return [None, None, None, None]
 
-
+def estimate_poisson_params(universe = universe, start = start, end = end):
+    """
+    Estimates the parameters of the Poisson Process
+    """
+    all_data = download_prepare_data(universe = universe, start = start, end = end)['Adj Close']
+    returns = all_data.pct_change()
+    
+    shocks = 0
+    
+    for ret in returns:
+        if ret.std() > 1:
+            shocks += 1
+            
+    error = np.random.normal(5, 5)
+    
+    total_shocks = shocks + error
+    
+    # CAN TRY MAXIMUM LIKELIHOOD ESTIMATOR (MLE OF LAMBDA IS SAMPLE MEAN)
+    
 
 def all_params(universe, start, end):
     """
@@ -598,6 +616,85 @@ def all_params(universe, start, end):
     results_df['Starting Price'] = last_stock_price
     
     return results_df
+
+def poisson_process(rate, time_duration):
+    """
+    Implements a Poisson Process to the stock prices - 'shocks' that occur periodically.
+    
+    Parameters:
+    - rate (lambda): float
+        The Poisson rate that at which shocks occur at
+    - time_duration: float
+        The time in years
+    Return:
+    - Shocks: Pandas Series
+        The output of running the rate in the Poisson Process
+    """
+    num_shocks = np.random.poisson(rate * time_duration)
+    event_times = np.sort(np.random.uniform(0, time_duration, num_shocks))
+    inter_arrival_times = np.diff(event_times)
+    
+    return num_shocks, event_times, inter_arrival_times
+
+def poisson_simulation(rate, time_duration):
+    """
+    Simulates the Poisson Process
+    Parameters:
+    - rate (lambda): float
+        The Poisson rate that at which shocks occur at
+    - time_duration: float
+        The time in years
+    Return:
+    - Shocks: Pandas Series
+        The output of running the rate in the Poisson Process
+    """
+    if isinstance(rate, int):
+        num_events, event_times, inter_arrival_times = poisson_process(rate, time_duration)
+        
+        return num_events, event_times, inter_arrival_times
+    
+    elif isinstance(rate, list):
+        num_events_list = []
+        event_times_list = []
+        inter_arrival_times_list = []
+        
+    for individual_rate in rate:
+        num_events, event_times, inter_arrival_times = poisson_process(rate, time_duration)
+        num_events_list.append(num_events)
+        event_times_list.append(event_times)
+        inter_arrival_times_list.append(event_times)
+        
+    return num_events_list, event_times_list, inter_arrival_times_list
+
+def log_normal_shock_factor(mu, sigma, num_events):
+    """
+    Simulates the severity of the shock once a shock event has been triggered. It is decided that the severity of the shock
+    will follow a log-normal distribution
+    
+    Parameters:
+    mu: float
+        The mean severity of the shock
+    sigma: float
+        The standard deviation of the shock
+    num_events: int
+        The number of events in shock process
+    """
+    raw_samples = np.random.lognormal(mean=mu, sigma=sigma, size=num_events)
+
+    # Normalize the values to fall between 0 and 1
+    min_val = np.min(raw_samples)
+    max_val = np.max(raw_samples)
+    scaled_samples = (raw_samples - min_val) / (max_val - min_val)
+
+    scaled_samples = np.clip(scaled_samples, 1e-10, 1 - 1e-10)
+    return scaled_samples
+
+    
+
+num_shocks, event_times, inter_arrival_times = poisson_process([2,3,4,7], 1)
+print(f"Number of Shocks: {num_shocks}\nEvent Times: {event_times}\nInterarrival Times: {inter_arrival_times}")
+
+
 
 
 def run_model():    
@@ -730,7 +827,6 @@ def run_model():
     all_option_prices = all_option_prices.rename(columns={0: 'Call Price', 1: 'Put Price'})
     
     
-
     print(f"Mean Estimated Option Prices: \n{all_option_prices}")
     print(f"Option Information:")
     print(f"Time to Expiration: {months} months, {days} days")
@@ -746,7 +842,7 @@ def run_model():
     return all_option_prices
 
 
-run_model()
+# run_model()
 
 
 
