@@ -559,25 +559,59 @@ def estimate_heston_parameters(ticker, start = start, end = end):
         print(f"Error processing {ticker}: {e}")
         return [None, None, None, None]
 
-def estimate_poisson_params(universe = universe, start = start, end = end):
+def estimate_poisson_params(universe, start, end, threshold_factor=2):
     """
-    Estimates the parameters of the Poisson Process
+    Estimates Poisson parameter lambda and log-normal parameters (mu and sigma)
+    directly from stock prices for a given universe.
+
+    Parameters:
+    - universe: list
+        A list of stock tickers to analyze.
+    - start: str
+        Start date for data.
+    - end: str
+        End date for data.
+    - threshold_factor: float
+        Multiplier for the standard deviation to define a shock.
+
+    Returns:
+    - parameters: DataFrame
+        A DataFrame containing lambda, mu, and sigma estimates for each stock.
     """
-    all_data = download_prepare_data(universe = universe, start = start, end = end)['Adj Close']
-    returns = all_data.pct_change()
+    all_data = download_prepare_data(universe=universe, start=start, end=end)
+    adj_close = all_data.filter(like='Adj Close')
     
-    shocks = 0
+    # Containers for results
+    results = []
     
-    for ret in returns:
-        if ret.std() > 1:
-            shocks += 1
-            
-    error = np.random.normal(5, 5)
+    for stock in adj_close.columns:
+        stock_data = adj_close[stock].dropna()
+        
+        log_prices = np.log(stock_data)
+        mu_estimate = log_prices.diff().mean()  
+        sigma_estimate = log_prices.diff().std()  
+        
+        price_diff = stock_data.diff().dropna()  
+        shock_threshold = threshold_factor * price_diff.std()
+        shocks = (price_diff.abs() > shock_threshold).sum()
+        observation_days = len(price_diff)
+        lambda_estimate = shocks / observation_days if observation_days > 0 else 0
+        
+        results.append({
+            'Stock': stock,
+            'Lambda': lambda_estimate,
+            'Mu': mu_estimate,
+            'Sigma': sigma_estimate
+        })
     
-    total_shocks = shocks + error
+    parameters = pd.DataFrame(results)
+    
+    return parameters  
+    
     
     # CAN TRY MAXIMUM LIKELIHOOD ESTIMATOR (MLE OF LAMBDA IS SAMPLE MEAN)
-    
+
+
 
 def all_params(universe, start, end):
     """
@@ -615,42 +649,52 @@ def all_params(universe, start, end):
     results_df['mu_daily'] = mu_values['mu_daily'].values
     results_df['Starting Price'] = last_stock_price
     
-    return results_df
+    poisson_params = estimate_poisson_params(universe, start, end)
+    
+    all_results_df = pd.concat([results_df, poisson_params], axis = 1)
+    
+    return all_results_df
+
+all_results_df = all_params(universe, start, end)
+print(all_results_df)
 
 def poisson_process(rate, time_duration):
     """
-    Implements a Poisson Process to the stock prices - 'shocks' that occur periodically.
-    
-    Parameters:
-    - rate (lambda): float
-        The Poisson rate that at which shocks occur at
-    - time_duration: float
-        The time in years
-    Return:
-    - Shocks: Pandas Series
-        The output of running the rate in the Poisson Process
+    Simulates a Poisson process for a given rate and time duration.
+    Returns:
+    - num_events: int
+        The number of events that occurred.
+    - event_times: list
+        The times of each event.
+    - inter_arrival_times: list
+        The inter-arrival times between events.
     """
-    num_shocks = np.random.poisson(rate * time_duration)
-    event_times = np.sort(np.random.uniform(0, time_duration, num_shocks))
-    inter_arrival_times = np.diff(event_times)
-    
-    return num_shocks, event_times, inter_arrival_times
+    inter_arrival_times = np.random.exponential(1 / rate, int(rate * time_duration * 10))
+    event_times = np.cumsum(inter_arrival_times)
+    event_times = event_times[event_times <= time_duration]
+    num_events = len(event_times)
+    return num_events, event_times, inter_arrival_times[:num_events]
 
 def poisson_simulation(rate, time_duration):
     """
-    Simulates the Poisson Process
+    Simulates the Poisson Process for one or multiple rates.
     Parameters:
-    - rate (lambda): float
-        The Poisson rate that at which shocks occur at
+    - rate: float or list of floats
+        The Poisson rate(s) at which shocks occur.
     - time_duration: float
-        The time in years
-    Return:
-    - Shocks: Pandas Series
-        The output of running the rate in the Poisson Process
+        The time in years.
+    Returns:
+    - If rate is a single value:
+        num_events: int
+        event_times: list
+        inter_arrival_times: list
+    - If rate is a list:
+        num_events_list: list of ints
+        event_times_list: list of lists
+        inter_arrival_times_list: list of lists
     """
-    if isinstance(rate, int):
+    if isinstance(rate, (float, int)):
         num_events, event_times, inter_arrival_times = poisson_process(rate, time_duration)
-        
         return num_events, event_times, inter_arrival_times
     
     elif isinstance(rate, list):
@@ -658,14 +702,18 @@ def poisson_simulation(rate, time_duration):
         event_times_list = []
         inter_arrival_times_list = []
         
-    for individual_rate in rate:
-        num_events, event_times, inter_arrival_times = poisson_process(rate, time_duration)
-        num_events_list.append(num_events)
-        event_times_list.append(event_times)
-        inter_arrival_times_list.append(event_times)
+        for individual_rate in rate:
+            num_events, event_times, inter_arrival_times = poisson_process(individual_rate, time_duration)
+            num_events_list.append(num_events)
+            event_times_list.append(event_times)
+            inter_arrival_times_list.append(inter_arrival_times)
         
-    return num_events_list, event_times_list, inter_arrival_times_list
+        return num_events_list, event_times_list, inter_arrival_times_list
+    else:
+        raise ValueError("Rate must be a float, int, or list of floats/ints.")
 
+x,y,z = poisson_simulation(0.02, 1)
+print(x,y,z)
 def log_normal_shock_factor(mu, sigma, num_events):
     """
     Simulates the severity of the shock once a shock event has been triggered. It is decided that the severity of the shock
@@ -688,12 +736,6 @@ def log_normal_shock_factor(mu, sigma, num_events):
 
     scaled_samples = np.clip(scaled_samples, 1e-10, 1 - 1e-10)
     return scaled_samples
-
-    
-
-num_shocks, event_times, inter_arrival_times = poisson_process([2,3,4,7], 1)
-print(f"Number of Shocks: {num_shocks}\nEvent Times: {event_times}\nInterarrival Times: {inter_arrival_times}")
-
 
 
 
@@ -744,8 +786,9 @@ def run_model():
     
     print("Calculating Parameters...")
     
-    model_parameters = all_params(universe, start ,end)
+    model_parameters, poisson_parameters = all_params(universe, start ,end)
     print(f"Model Parameters for Each Stock:\n{model_parameters}")
+    
     
     strike_prices = {}
     
@@ -760,6 +803,9 @@ def run_model():
         v0 = row['V0']
         mu_daily = row['mu_daily']
         starting_price = row['Starting Price']
+        poisson_mu = row['Mu']
+        poisson_sigma = row['Sigma']
+        poisson_lambda = row['Lambda']
 
         print(f"Running model for {stock}:")
         print(f"  Kappa: {kappa:.4f}, Theta: {theta:.6f}, Sigma_v: {sigma_v:.6f}, V0: {v0:.6f}, Mu: {mu_daily:.6f}, Starting Price: {starting_price:.2f}")
