@@ -239,7 +239,7 @@ def identify_hl_vol(historical_regimes, SP500_returns, n_steps):
     return future_volatility
 
 
-def simulate_stock_prices(S0, T, dt, n_paths, high_vol_params, low_vol_params):
+def simulate_stock_prices(S0, T, dt, n_paths, high_vol_params, low_vol_params, poisson_params):
     """
     Combines the Hidden Markov Model (HMM) with the Heston volatility model, when volatility is high, and the Geometric Brownian Motion
     Model, when volatility is low.
@@ -268,10 +268,25 @@ def simulate_stock_prices(S0, T, dt, n_paths, high_vol_params, low_vol_params):
 
     simulated_prices = np.zeros((n_paths, n_steps + 1))
     simulated_prices[:, 0] = S0
+    
+    # All rates are annualized
+    poisson_mu = poisson_params['mu']
+    poisson_lambda = poisson_params['lambda']
+    poisson_sigma = poisson_params['sigma']
+    
+    num_events, event_times, inter_arrival_times = poisson_simulation(poisson_lambda, T)
+    shock_factors = log_normal_shock_factor(poisson_mu, poisson_sigma, num_events)
 
-    for t in range(1, n_steps + 1):  # Loop through time steps
-        regime = future_volatility.iloc[t - 1]  # Align regime with t
-
+    if num_events > 0:
+        shock_steps = (np.array(event_times) / dt).astype(int)
+        shock_map = dict(zip(shock_steps, shock_factors))
+    else:
+        shock_map = {}
+    
+    
+    for t in range(1, n_steps + 1): 
+        regime = future_volatility.iloc[t - 1]  
+        
         if regime == "High Volatility":
             kappa = high_vol_params['Kappa']
             theta = high_vol_params['Theta']
@@ -289,11 +304,14 @@ def simulate_stock_prices(S0, T, dt, n_paths, high_vol_params, low_vol_params):
             mu = low_vol_params['mu']
             Z = np.random.normal(size=n_paths)
             simulated_prices[:, t] = simulated_prices[:, t - 1] * np.exp(
-                (mu - 0.5 * 0.04) * dt +  # Assuming fixed variance for low vol
+                (mu - 0.5 * 0.04) * dt +  
                 np.sqrt(0.04) * Z * np.sqrt(dt)
             )
         else:
             raise ValueError(f"Unexpected regime: {regime}")
+        
+        if t in shock_map:
+            simulated_prices[:, t] *= shock_map[t]
 
     return pd.DataFrame(simulated_prices)
 
@@ -381,7 +399,7 @@ def graphing(simulated_prices):
     plt.title("100 Simulations of Stock Prices")
     plt.ylabel("Price in $")
     plt.xlabel("Time Steps")
-    plt.show()
+    # plt.show()
 
 # THIS IS A TEST FUNCTION (NOT COMPLETE)
 def monte_carlo_simulation(simulated_prices, n_batches, future_regimes=None):
@@ -408,16 +426,6 @@ def monte_carlo_simulation(simulated_prices, n_batches, future_regimes=None):
     
     return all_final_prices, final_prices_mean, final_prices_std
 
-
-def print_information():
-    S0 = 100  
-    T = 2.0 
-    dt = 0.01  
-    n_paths = 100  
-    r = 0.05 
-
-# sig = monte_carlo_simulation(n_batches=50)
-# print(sig)
     
 def download_prepare_data(universe, start, end):
     """
@@ -561,7 +569,7 @@ def estimate_heston_parameters(ticker, start = start, end = end):
 
 def estimate_poisson_params(universe, start, end, threshold_factor=2):
     """
-    Estimates Poisson parameter lambda and log-normal parameters (mu and sigma)
+    Estimates annualized Poisson parameter lambda and log-normal parameters (mu and sigma)
     directly from stock prices for a given universe.
 
     Parameters:
@@ -576,11 +584,15 @@ def estimate_poisson_params(universe, start, end, threshold_factor=2):
 
     Returns:
     - parameters: DataFrame
-        A DataFrame containing lambda, mu, and sigma estimates for each stock.
+        A DataFrame containing annualized lambda, mu, and sigma estimates for each stock.
     """
     all_data = download_prepare_data(universe=universe, start=start, end=end)
     adj_close = all_data.filter(like='Adj Close')
     
+    # Calculate the number of trading days in the data
+    n_days = (datetime.strptime(end, '%Y-%m-%d') - datetime.strptime(start, '%Y-%m-%d')).days
+    trading_years = n_days / 252  # Approximate trading days in a year
+
     # Containers for results
     results = []
     
@@ -597,21 +609,20 @@ def estimate_poisson_params(universe, start, end, threshold_factor=2):
         observation_days = len(price_diff)
         lambda_estimate = shocks / observation_days if observation_days > 0 else 0
         
+        # Annualize the parameters
+        lambda_annualized = lambda_estimate * (252 / observation_days)
+        mu_annualized = mu_estimate * (252 / observation_days)
+        sigma_annualized = sigma_estimate * np.sqrt(252 / observation_days)
+        
         results.append({
-            'Stock': stock,
-            'Lambda': lambda_estimate,
-            'Mu': mu_estimate,
-            'Sigma': sigma_estimate
+            'Lambda Annualized': lambda_annualized,
+            'Mu Annualized': mu_annualized,
+            'Sigma Annualized': sigma_annualized
         })
     
-    parameters = pd.DataFrame(results)
+    parameters = pd.DataFrame(results)  
     
-    return parameters  
-    
-    
-    # CAN TRY MAXIMUM LIKELIHOOD ESTIMATOR (MLE OF LAMBDA IS SAMPLE MEAN)
-
-
+    return parameters 
 
 def all_params(universe, start, end):
     """
@@ -632,6 +643,8 @@ def all_params(universe, start, end):
     all_data = download_prepare_data(universe = universe, start = start, end = end)
     adj_close = all_data.filter(like='Adj Close').tail(1)
     last_stock_price = adj_close.iloc[-1].values
+    
+    print(last_stock_price)
     
     mu_values = calculate_mu(universe, start, end)
     results = []
@@ -655,8 +668,7 @@ def all_params(universe, start, end):
     
     return all_results_df
 
-all_results_df = all_params(universe, start, end)
-print(all_results_df)
+print(all_params(universe, start, end))
 
 def poisson_process(rate, time_duration):
     """
@@ -669,11 +681,21 @@ def poisson_process(rate, time_duration):
     - inter_arrival_times: list
         The inter-arrival times between events.
     """
-    inter_arrival_times = np.random.exponential(1 / rate, int(rate * time_duration * 10))
+    inter_arrival_times = []
+    total_time = 0
+    
+    while total_time < time_duration:
+        inter_arrival = np.exp(1/rate)
+        total_time += inter_arrival
+        
+        if total_time <= time_duration:
+            inter_arrival_times.append(inter_arrival)
+        
     event_times = np.cumsum(inter_arrival_times)
-    event_times = event_times[event_times <= time_duration]
     num_events = len(event_times)
-    return num_events, event_times, inter_arrival_times[:num_events]
+    
+    return num_events, event_times.tolist(), inter_arrival_times
+        
 
 def poisson_simulation(rate, time_duration):
     """
@@ -712,8 +734,6 @@ def poisson_simulation(rate, time_duration):
     else:
         raise ValueError("Rate must be a float, int, or list of floats/ints.")
 
-x,y,z = poisson_simulation(0.02, 1)
-print(x,y,z)
 def log_normal_shock_factor(mu, sigma, num_events):
     """
     Simulates the severity of the shock once a shock event has been triggered. It is decided that the severity of the shock
@@ -727,6 +747,10 @@ def log_normal_shock_factor(mu, sigma, num_events):
     num_events: int
         The number of events in shock process
     """
+    if num_events == 0:
+        return []
+    
+    
     raw_samples = np.random.lognormal(mean=mu, sigma=sigma, size=num_events)
 
     # Normalize the values to fall between 0 and 1
@@ -735,8 +759,7 @@ def log_normal_shock_factor(mu, sigma, num_events):
     scaled_samples = (raw_samples - min_val) / (max_val - min_val)
 
     scaled_samples = np.clip(scaled_samples, 1e-10, 1 - 1e-10)
-    return scaled_samples
-
+    return scaled_samples.tolist()
 
 
 def run_model():    
@@ -774,8 +797,8 @@ def run_model():
     risk_free_data = risk_free_data / 100  # Convert from percentage to decimal
     
     # Parameters for Monte Carlo Simulation
-    n_paths = 120  # Number of simulation paths
-    T = 1/73  # Time to Expiration (Into the Future, in years)
+    n_paths = 75  # Number of simulation paths
+    T = 1/2  # Time to Expiration (Into the Future, in years)
     dt = 1 / 252  # Daily time step
     r = risk_free_data.tail(1).values
     start, end = '2020-01-01', '2024-12-24' # FOR MODEL TRAINING (DATA MUST EXIST)
@@ -786,7 +809,8 @@ def run_model():
     
     print("Calculating Parameters...")
     
-    model_parameters, poisson_parameters = all_params(universe, start ,end)
+    model_parameters = all_params(universe, start ,end)
+
     print(f"Model Parameters for Each Stock:\n{model_parameters}")
     
     
@@ -795,21 +819,30 @@ def run_model():
     mean_option_prices = {}
     short_mean_option_prices = {}
 
-    for _, row in model_parameters.iterrows():
-        stock = row['Stock']
+    for index, row in model_parameters.iterrows():
+        
+        print(f"Row Index: {index}")  # Debugging
+        print(f"Row Data: \n{row}")   # Debugging
+    
+        stock = row['Stock']  # Access the stock ticker
         kappa = row['Kappa']
         theta = row['Theta']
         sigma_v = row['Sigma_v']
         v0 = row['V0']
         mu_daily = row['mu_daily']
-        starting_price = row['Starting Price']
-        poisson_mu = row['Mu']
-        poisson_sigma = row['Sigma']
-        poisson_lambda = row['Lambda']
+        starting_price = row['Starting Price']  # Ensure this is a scalar value
+        poisson_mu = row['Mu Annualized']
+        poisson_sigma = row['Sigma Annualized']
+        poisson_lambda = row['Lambda Annualized']
+        
+
+        # Calculate strike price
+        strike_prices[stock] = starting_price * (1 + option_premium)
 
         print(f"Running model for {stock}:")
         print(f"  Kappa: {kappa:.4f}, Theta: {theta:.6f}, Sigma_v: {sigma_v:.6f}, V0: {v0:.6f}, Mu: {mu_daily:.6f}, Starting Price: {starting_price:.2f}")
 
+        print(strike_prices)
         # Simulate stock prices using the simulate_stock_prices function
         high_vol_params = {
             'Kappa': kappa,
@@ -821,6 +854,12 @@ def run_model():
         low_vol_params = {
             'mu': mu_daily
         }
+        
+        poisson_params = {
+            'mu': poisson_mu,
+            'sigma': poisson_sigma,
+            'lambda': poisson_lambda
+        }
 
         simulated_prices = simulate_stock_prices(
             S0=starting_price,
@@ -828,11 +867,11 @@ def run_model():
             dt=dt,
             n_paths=n_paths,
             high_vol_params=high_vol_params,
-            low_vol_params=low_vol_params
+            low_vol_params=low_vol_params,
+            poisson_params = poisson_params
         )
         
-        # strike_prices[stock] = row['Starting Price'] * (1 + option_premium) #10% Down from current price
-        strike_prices[stock] = 100
+        strike_prices[stock] = row['Starting Price'] * (1 + option_premium) #10% Down from current price
         
         print(f"Simulated Prices for {stock}")
         print(simulated_prices)
@@ -864,7 +903,7 @@ def run_model():
         plt.title(f"Simulated Prices for {stock}")
         plt.xlabel("Time Steps")
         plt.ylabel("Price ($)")
-        # plt.show()
+        plt.show()
         
     mean_option_prices = pd.Series(mean_option_prices)
     short_mean_option_prices = pd.Series(short_mean_option_prices)
@@ -887,10 +926,7 @@ def run_model():
 
     return all_option_prices
 
-
-# run_model()
-
-
+run_model()
 
 
 
