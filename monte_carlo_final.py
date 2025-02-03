@@ -10,7 +10,8 @@ from scipy.stats import norm
 import pandas_datareader.data as pdr
 from datetime import datetime
 
-
+start = '2022-01-01' # For Training data
+end = '2025-01-31' # For Training Data
 
 
 
@@ -107,6 +108,12 @@ def Black_Scholes_Compare(S_t, K, r, t, sigma):
     C       : The call price of the option (float)
     P       : The put price of the option (float)
     """
+    S_t = S_t.item() if isinstance(S_t, np.ndarray) else float(S_t)
+    K = K.item() if isinstance(K, np.ndarray) else float(K)
+    r = r.item() if isinstance(r, np.ndarray) else float(r)
+    t = t.item() if isinstance(t, np.ndarray) else float(t)
+    sigma = sigma.item() if isinstance(sigma, np.ndarray) else float(sigma)
+    
     S_t, K, r, t, sigma = map(float, (S_t, K, r, t, sigma))
     
     d1 = (np.log(S_t / K) + (r + sigma ** 2 / 2) * t) / (sigma * np.sqrt(t))
@@ -115,8 +122,8 @@ def Black_Scholes_Compare(S_t, K, r, t, sigma):
     C = norm.cdf(d1) * S_t - norm.cdf(d2) * K * np.exp(-r * t)
     P = K * np.exp(-r * t) * norm.cdf(-d2) - S_t * norm.cdf(-d1)
 
-    print(f"BSM CALL PRICE: {C}")
-    print(f"BSM PUT PRICE: {P}")
+    # print(f"BSM CALL PRICE: {C}")
+    # print(f"BSM PUT PRICE: {P}")
 
     return C, P
 
@@ -398,7 +405,6 @@ def convergence_analysis(simulated_prices, future_regimes=None):
 
     return lower_bound, upper_bound, final_mean
 
-import numpy as np
 def calculate_option_price(final_mean, X, r, T, sigma):
     """
     Calculates the price of the option given the predicted price under the no arbitrage pricing theory. Also incorporates the time 
@@ -426,7 +432,7 @@ def calculate_option_price(final_mean, X, r, T, sigma):
     option_payoff = np.max((final_mean - X, 0))
     option_price = option_payoff * np.exp(-r*T)
     
-    scaling_factor = 0.1 * final_mean
+    scaling_factor = 0.3 * final_mean # 0.3 from experimentation 
     time_value = sigma * np.sqrt(T) * scaling_factor
     
     put_option_payoff = np.max((X - final_mean, 0))
@@ -572,7 +578,6 @@ def estimate_heston_parameters(ticker, start = start, end = end):
 
         # variance =   log_returns[f'{ticker}_Log Returns'].rolling(window=15).var()
         # observed_v = variance.dropna().values 
-        print(f"VARIANCE: {observed_v}")
         dt = 1 / 252  
 
         initial_guess = [1.0, observed_v.mean(), observed_v.std(), observed_v[0]]  # [kappa, theta, sigma_v, v0]
@@ -876,8 +881,8 @@ def run_model():
     """
     global start, end, universe
     
-    universe = ['NVDA']
-    option_premium = -0.1
+    universe = ['NVDA','TSLA']
+    option_premium = -0.1 # NEGATIVE FOR STRIKE PRICE LESS THAN SPOT PRICE
     
     treasury_start_date = datetime(2024, 1, 1)
     treasury_end_date = datetime(2024, 12, 20)
@@ -887,7 +892,7 @@ def run_model():
     
     # Parameters for Monte Carlo Simulation
     n_paths = 75  # Number of simulation paths
-    T = 0.5  # Time to Expiration (Into the Future, in years)
+    T = 1/52  # Time to Expiration (Into the Future, in years)
     dt = 1 / 252  # Daily time step
     r = risk_free_data.tail(1).values
     start, end = '2020-01-01', '2024-12-24' # FOR MODEL TRAINING (DATA MUST EXIST)
@@ -988,9 +993,6 @@ def run_model():
         
         put_mean_option_price = np.mean(put_option_prices)
         put_mean_option_prices[stock] = put_mean_option_price
-        
-        print(f"STRIKE PRICES: {strike_prices}")
-        # print(f"ALL FINAL PRICES: {all_final_prices}")
 
         # Optional plotting
         plt.figure(figsize=(10, 6))   
@@ -1007,12 +1009,9 @@ def run_model():
     pd.options.display.max_columns = None
 
     all_option_prices = pd.concat([mean_option_prices, put_mean_option_prices], axis=1)
-    all_option_prices = all_option_prices.rename(columns={0: 'Call Price', 1: 'Put Price'})
-    
-    print(f"Model Predicted Option Prices: \n{all_option_prices}")
-    print(f"Option Information:")
-    print(f"Time to Expiration: {months} months, {days} days")
-    
+    all_option_prices = all_option_prices.reset_index()
+    all_option_prices = all_option_prices.rename(columns={'index': 'Stock', 0: 'Call Price', 1: 'Put Price'})
+        
     call_bsm_prices = []
     put_bsm_prices = []
     
@@ -1030,24 +1029,33 @@ def run_model():
     call_bsm_prices = [float(arr.flatten()[0]) for arr in call_bsm_prices]
     put_bsm_prices = [float(arr.flatten()[0]) for arr in put_bsm_prices]
 
-    call_bsm_prices = pd.Series(call_bsm_prices)    
+    call_bsm_prices = pd.Series(call_bsm_prices) 
+    put_bsm_prices = pd.Series(put_bsm_prices)
+    
+    universe = pd.Series(universe)
+    bsm_prices = pd.concat([universe, call_bsm_prices, put_bsm_prices], axis = 1)
+    bsm_prices = bsm_prices.rename(columns = {0: 'Stock', 1: 'BSM Call Price', 2: 'BSM Put Price'})
+    
+    final_all_options = all_option_prices.merge(bsm_prices, how = 'outer')
+    strike_prices = pd.Series(strike_prices)
+    strike_prices = strike_prices.reset_index()
+    strike_prices = strike_prices.rename(columns = {'index': 'Stock', 0: 'Strike Price'})
+    
+    final_all_options = final_all_options.merge(strike_prices, how = 'outer')
+    
+    print(f"Model Predicted Option Prices: \n{final_all_options}\n")
+    print(f"Time to Expiration: {months} months, {days} days")
 
-    # print(f"LONG BSM: {call_bsm_prices}")
-    # print(f"PUT BSM: {put_bsm_prices}")
-
-    return all_option_prices
+    
+    
+    return final_all_options
 
 run_model()
 
 
-
-### NOTE: NEED TO FEED THE CORRECT PARAMETERS TO SIMULATE_STOCK_PRICES
-
-#123456
 # cd monte-carlo
 # git add .
 # git commit -m "smthn"
 # git push
 
 # NOTE: ADD IN AN IMPLIED VOLATILITY FOR OPTION INFO
-# IF DOESN'T WORK TRY IN NEW FILE
