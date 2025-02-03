@@ -626,7 +626,7 @@ def run_model():
     global start, end, universe
     
     universe = ['AAPL']
-    option_premium = 0.1
+    option_premium = -0.1
     
     treasury_start_date = datetime(2024, 1, 1)
     treasury_end_date = datetime(2024, 12, 20)
@@ -636,7 +636,7 @@ def run_model():
     
     # Parameters for Monte Carlo Simulation
     n_paths = 120  # Number of simulation paths
-    T = 1/73  # Time to Expiration (Into the Future, in years)
+    T = 1.5  # Time to Expiration (Into the Future, in years)
     dt = 1 / 252  # Daily time step
     r = risk_free_data.tail(1).values
     start, end = '2020-01-01', '2024-12-24' # FOR MODEL TRAINING (DATA MUST EXIST)
@@ -688,8 +688,7 @@ def run_model():
             low_vol_params=low_vol_params
         )
         
-        # strike_prices[stock] = row['Starting Price'] * (1 + option_premium) #10% Down from current price
-        strike_prices[stock] = 100
+        strike_prices[stock] = row['Starting Price'] * (1 + option_premium) #10% Down from current price
         
         print(f"Simulated Prices for {stock}")
         print(simulated_prices)

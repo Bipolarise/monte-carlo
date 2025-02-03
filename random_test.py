@@ -10,9 +10,9 @@ from scipy.stats import norm
 import pandas_datareader.data as pdr
 from datetime import datetime
 
-universe = ['NVDA', 'AAPL', 'KO']
-start = '2022-01-01' # For Training data
-end = '2024-12-01' # For Training Data
+
+
+
 
 
 # NOTE: Recommended Large Training Size (10+ years)
@@ -46,6 +46,8 @@ def heston_volatility_process(v0, kappa, theta, sigma_v, T, dt, n_paths):
         var_paths[:, i] = var_paths[:, i - 1] + kappa * (theta - var_paths[:, i - 1]) * dt + sigma_v * np.sqrt(var_paths[:, i - 1]) * np.sqrt(dt) * Z
         var_paths[:, i] = np.maximum(var_paths[:, i], 0)  # Ensure non-negative variance
         vol_paths[:, i] = np.sqrt(var_paths[:, i])
+    
+    # print(f"VOL PATHS FROM HESTON: {vol_paths}")
     
     return vol_paths
 
@@ -93,40 +95,47 @@ def calculate_log_returns(universe_data):
 def Black_Scholes_Compare(S_t, K, r, t, sigma):
     """
     Finds the option price according to the Black Scholes Formula
-    
-    Parameters:
-    S_t     : Pandas DataFrame of current prices for each stock
-    K       : Pandas DataFrame of current strike prices for each stock
-    r       : Current risk free rate
-    t       : Time to expiration (years)
-    sigma   : Current volatility of underlying asset
-    
-    Returns:
-    C       : The call price of the option
-    """
-    
-    d1 = (np.log(S_t/K) + (r + sigma ** 2 / 2) * t) / (sigma * np.sqrt(t))
-    d2 = d1 - sigma * np.sqrt(t)
-    
-    C = norm.cdf(d1) * S_t - norm.cdf(d2) * K * np.exp(-r * t)
-    
-    return C
 
+    Parameters:
+    S_t     : Current price of the stock (float or scalar)
+    K       : Strike price of the option (float or scalar)
+    r       : Current risk-free rate (float)
+    t       : Time to expiration (in years, float)
+    sigma   : Current volatility of the underlying asset (float)
+
+    Returns:
+    C       : The call price of the option (float)
+    P       : The put price of the option (float)
+    """
+    S_t, K, r, t, sigma = map(float, (S_t, K, r, t, sigma))
+    
+    d1 = (np.log(S_t / K) + (r + sigma ** 2 / 2) * t) / (sigma * np.sqrt(t))
+    d2 = d1 - sigma * np.sqrt(t)
+
+    C = norm.cdf(d1) * S_t - norm.cdf(d2) * K * np.exp(-r * t)
+    P = K * np.exp(-r * t) * norm.cdf(-d2) - S_t * norm.cdf(-d1)
+
+    print(f"BSM CALL PRICE: {C}")
+    print(f"BSM PUT PRICE: {P}")
+
+    return C, P
 
 def use_BSM_Compare(ticker, strike_prices, risk_free_rate, time_to_expiration, volatility):
 
     stock_data = yf.download(ticker, start=start, end = end)
     adj_close_prices = stock_data['Adj Close'].iloc[-1]
 
-    option_price = Black_Scholes_Compare(
+    option_price, put_price= Black_Scholes_Compare(
         S_t=adj_close_prices,
         K=strike_prices,
         r=risk_free_rate,
         t=time_to_expiration,
         sigma=volatility
     )
+    
 
-    return option_price
+    return option_price, put_price
+
 
 
 def simulate_HMM_Regime(start = start, end = end):
@@ -156,7 +165,7 @@ def simulate_HMM_Regime(start = start, end = end):
     # TEST THIS FUNCTION
     return hmm, historical_regimes, SP500_returns, X
     
-hmm, historical_regimes, SP500_returns, X = simulate_HMM_Regime(start = '2000-01-01', end = '2023-01-01')
+hmm, historical_regimes, SP500_returns, X = simulate_HMM_Regime(start = '2020-01-01', end = '2023-01-01')
 
 
 def simulate_future_regimes(hmm, n_steps, last_date = end):
@@ -257,6 +266,7 @@ def simulate_stock_prices(S0, T, dt, n_paths, high_vol_params, low_vol_params, p
     
     NOTE: Parameters are sourced dynamically from `all_params`.
     """
+    print("Simulating Stock Prices...")
     n_steps = int(T / dt)
         
     future_volatility = identify_hl_vol(historical_regimes, SP500_returns, n_steps)
@@ -276,9 +286,13 @@ def simulate_stock_prices(S0, T, dt, n_paths, high_vol_params, low_vol_params, p
     
     num_events, event_times, inter_arrival_times = poisson_simulation(poisson_lambda, T)
     shock_factors = log_normal_shock_factor(poisson_mu, poisson_sigma, num_events)
+    shocks = predict_shocks_probabilistic(universe, start, end, num_shocks = num_events)
+    # print("Predicted shocks:", shocks) DEBUGGING
+    # print(f"NUM EVENTS: {num_events}") DEBUGGING
 
     if num_events > 0:
         shock_steps = (np.array(event_times) / dt).astype(int)
+        shock_steps = shock_steps[shock_steps < n_steps]
         shock_map = dict(zip(shock_steps, shock_factors))
     else:
         shock_map = {}
@@ -294,11 +308,15 @@ def simulate_stock_prices(S0, T, dt, n_paths, high_vol_params, low_vol_params, p
             v0 = high_vol_params['V0']
 
             vol_paths = heston_volatility_process(v0, kappa, theta, sigma_v, T, dt, n_paths)
+            # print(f"SHAPE: {vol_paths.shape}")
             Z = np.random.normal(size=n_paths)
+            
             simulated_prices[:, t] = simulated_prices[:, t - 1] * np.exp(
                 (-0.5 * vol_paths[:, t - 1]**2) * dt +
                 vol_paths[:, t - 1] * Z * np.sqrt(dt)
             )
+            # print(f"VOL PATHS: {vol_paths}")
+            # print(type(vol_paths))
 
         elif regime == "Low Volatility":
             mu = low_vol_params['mu']
@@ -311,10 +329,17 @@ def simulate_stock_prices(S0, T, dt, n_paths, high_vol_params, low_vol_params, p
             raise ValueError(f"Unexpected regime: {regime}")
         
         if t in shock_map:
-            simulated_prices[:, t] *= shock_map[t]
+            # print(f"Applying shock at step {t}: {shock_map[t]}")
+            simulated_prices[:, t] += np.mean(simulated_prices) * shock_map[t]
+            
+            for stock, stock_shocks in shocks.items():
+                if t - 1 < len(stock_shocks):  # Ensure shocks exist for this step
+                    shock = stock_shocks[t - 1]
+                    # print(f"Applying probabilistic shock for {stock} at step {t}: {shock}")
+                    simulated_prices[:, t] += simulated_prices[:, t] * shock * 0.01  # Scale the shock impact
+
 
     return pd.DataFrame(simulated_prices)
-
 
 def convergence_analysis(simulated_prices, future_regimes=None):
     """
@@ -373,60 +398,48 @@ def convergence_analysis(simulated_prices, future_regimes=None):
 
     return lower_bound, upper_bound, final_mean
 
-
-def calculate_option_price(final_mean, X, r, T):
+import numpy as np
+def calculate_option_price(final_mean, X, r, T, sigma):
     """
-    Calculates the price of the option given the predicted price under the no arbitrage pricing theory
+    Calculates the price of the option given the predicted price under the no arbitrage pricing theory. Also incorporates the time 
+    value of the option using a simplistic model that is proportional to the volatility and correlated with the time to expiration.
     
     Parameters:
-    final_mean: int
+    final_mean: float
         The final mean of the Monte Carlo Simulation of Stock Prices
+    X: float
+        The strike price of the option
+    r: float
+        The current risk free rate
+    T: float
+        The time to expiration
+    sigma: float
+        The volatility of the underlying stock
+        
+    Returns:
+    option_price: float
+        The price of the call option
+    short_option_price: float
+        The price of the put option
     """
 
-    option_payoff = np.max(final_mean - X, 0)
+    option_payoff = np.max((final_mean - X, 0))
     option_price = option_payoff * np.exp(-r*T)
     
-    short_option_payoff = np.max(X - final_mean, 0)
-    short_option_price = short_option_payoff * np.exp(r*T)
+    scaling_factor = 0.1 * final_mean
+    time_value = sigma * np.sqrt(T) * scaling_factor
     
-    return option_price, short_option_price
+    put_option_payoff = np.max((X - final_mean, 0))
+    
+    put_option_price = put_option_payoff * np.exp(r*T)
+    
+    put_option_price += time_value
+    option_price += time_value
+    
+    
+    return option_price, put_option_price
 
-def graphing(simulated_prices):
-    plt.figure(figsize=(12, 7))
 
-    for i in range(simulated_prices.shape[0]):
-        plt.plot(simulated_prices.iloc[i, :], alpha=0.7)
-    plt.title("100 Simulations of Stock Prices")
-    plt.ylabel("Price in $")
-    plt.xlabel("Time Steps")
-    # plt.show()
-
-# THIS IS A TEST FUNCTION (NOT COMPLETE)
-def monte_carlo_simulation(simulated_prices, n_batches, future_regimes=None):
-    """
-    Runs n-batches of Monte-Carlo Convergence Analyses. 
-    
-    Parameters:
-    simulated_prices: pd.DataFrame
-        Simulated stock prices to analyze.
-    n_batches: int
-        The number of batches to be simulated. For more accurate results, it is recommended that n_batches > 40
-    
-    Returns:
-    mean_option_price
-    """
-    all_final_prices = []
-    
-    for _ in range(0, n_batches + 1):
-        _, _, final_mean = convergence_analysis(simulated_prices, future_regimes=future_regimes)
-        all_final_prices.append(final_mean)
-        
-    final_prices_mean = np.mean(all_final_prices)
-    final_prices_std = np.std(all_final_prices)
-    
-    return all_final_prices, final_prices_mean, final_prices_std
-
-    
 def download_prepare_data(universe, start, end):
     """
     Downloads the stocks in the universe and formats them for use.
@@ -457,7 +470,6 @@ def download_prepare_data(universe, start, end):
         all_data = pd.concat([all_data, data], axis=1)
     
     return all_data.dropna()  
-
 
 def negative_log_likelihood_gbm(params, returns):
     """
@@ -551,10 +563,16 @@ def estimate_heston_parameters(ticker, start = start, end = end):
         
         all_data = download_prepare_data([ticker], start=start, end=end)
         log_returns = all_data.filter(like='Log Returns')
-
         
-        variance = log_returns[f'{ticker}_Log Returns'].rolling(window=15).var()
-        observed_v = variance.dropna().values 
+        daily_volatility = log_returns.std()
+        annualized_volatility = daily_volatility * np.sqrt(252)
+        
+        variance = annualized_volatility ** 2
+        observed_v = variance.dropna().values
+
+        # variance =   log_returns[f'{ticker}_Log Returns'].rolling(window=15).var()
+        # observed_v = variance.dropna().values 
+        print(f"VARIANCE: {observed_v}")
         dt = 1 / 252  
 
         initial_guess = [1.0, observed_v.mean(), observed_v.std(), observed_v[0]]  # [kappa, theta, sigma_v, v0]
@@ -643,9 +661,7 @@ def all_params(universe, start, end):
     all_data = download_prepare_data(universe = universe, start = start, end = end)
     adj_close = all_data.filter(like='Adj Close').tail(1)
     last_stock_price = adj_close.iloc[-1].values
-    
-    print(last_stock_price)
-    
+        
     mu_values = calculate_mu(universe, start, end)
     results = []
     for ticker in universe:
@@ -668,8 +684,6 @@ def all_params(universe, start, end):
     
     return all_results_df
 
-print(all_params(universe, start, end))
-
 def poisson_process(rate, time_duration):
     """
     Simulates a Poisson process for a given rate and time duration.
@@ -681,21 +695,27 @@ def poisson_process(rate, time_duration):
     - inter_arrival_times: list
         The inter-arrival times between events.
     """
+    # np.random.seed(42)
+    
     inter_arrival_times = []
     total_time = 0
     
+    epsilon = 1e-10
+    
     while total_time < time_duration:
-        inter_arrival = np.exp(1/rate)
+        inter_arrival = np.random.exponential(1/rate)
+        
+        if total_time + inter_arrival > time_duration + epsilon:
+            break
+        
+        inter_arrival_times.append(inter_arrival)
         total_time += inter_arrival
-        
-        if total_time <= time_duration:
-            inter_arrival_times.append(inter_arrival)
-        
+
     event_times = np.cumsum(inter_arrival_times)
     num_events = len(event_times)
-    
-    return num_events, event_times.tolist(), inter_arrival_times
         
+    return num_events, event_times.tolist(), inter_arrival_times
+
 
 def poisson_simulation(rate, time_duration):
     """
@@ -715,10 +735,12 @@ def poisson_simulation(rate, time_duration):
         event_times_list: list of lists
         inter_arrival_times_list: list of lists
     """
+    rate *= 252 # Daily rate to annual
+    
     if isinstance(rate, (float, int)):
         num_events, event_times, inter_arrival_times = poisson_process(rate, time_duration)
         return num_events, event_times, inter_arrival_times
-    
+        
     elif isinstance(rate, list):
         num_events_list = []
         event_times_list = []
@@ -733,6 +755,68 @@ def poisson_simulation(rate, time_duration):
         return num_events_list, event_times_list, inter_arrival_times_list
     else:
         raise ValueError("Rate must be a float, int, or list of floats/ints.")
+
+def predict_shocks_probabilistic(universe, start, end, num_shocks, threshold=1.7):
+    """
+    Predict whether the next shocks in stock prices will be positive or negative based on historical probabilities.
+
+    Parameters:
+    - universe: list of str
+        List of stock tickers to analyze (e.g., ["AAPL", "NVDA"]).
+    - start: str
+        The start date for historical data in the format 'YYYY-MM-DD'.
+    - end: str
+        The end date for historical data in the format 'YYYY-MM-DD'.
+    - num_shocks: int
+        The number of shocks to predict.
+    - threshold: float
+        The standard deviation multiplier to classify shocks.
+
+    Returns:
+    - shock_predictions: dict
+        Dictionary of predictions for each stock with lists of -1 (negative shocks) and 1 (positive shocks).
+    """
+    all_data = download_prepare_data(universe=universe, start=start, end=end)
+    adj_close = all_data.filter(like='Adj Close')
+    
+    predictions = {}
+
+    for stock in adj_close.columns:
+        # print(f"Processing {stock}...")
+        
+        # Extract adjusted close prices
+        stock_prices = adj_close[stock].dropna()
+        
+        if len(stock_prices) < 20:  # Minimum data points
+            print(f"Skipping {stock}: Insufficient data points.")
+            continue
+
+        # Calculate log returns
+        log_returns = np.diff(np.log(stock_prices.values))
+        shock_threshold = threshold * np.std(log_returns)
+        
+        # Identify shocks
+        positive_shocks = (log_returns > shock_threshold).sum()
+        negative_shocks = (log_returns < -shock_threshold).sum()
+
+        # Calculate probabilities
+        total_shocks = positive_shocks + negative_shocks
+        if total_shocks == 0:
+            print(f"No shocks found for {stock}. Skipping.")
+            continue
+        
+        prob_up = positive_shocks / total_shocks
+        prob_down = negative_shocks / total_shocks
+
+        # print(f"{stock}: Prob Up = {prob_up:.2f}, Prob Down = {prob_down:.2f}")
+        
+        # Predict shocks based on probabilities
+        shock_predictions = np.random.choice([1, -1], size=num_shocks, p=[prob_up, prob_down])
+        predictions[stock] = shock_predictions.tolist()
+
+    return predictions
+
+
 
 def log_normal_shock_factor(mu, sigma, num_events):
     """
@@ -750,15 +834,20 @@ def log_normal_shock_factor(mu, sigma, num_events):
     if num_events == 0:
         return []
     
-    
     raw_samples = np.random.lognormal(mean=mu, sigma=sigma, size=num_events)
 
-    # Normalize the values to fall between 0 and 1
     min_val = np.min(raw_samples)
     max_val = np.max(raw_samples)
-    scaled_samples = (raw_samples - min_val) / (max_val - min_val)
+
+    if max_val == min_val:  
+        scaled_samples = np.full_like(raw_samples, 0.5)  # Default to 0.5
+    else:
+        scaled_samples = (raw_samples - min_val) / (max_val - min_val)
 
     scaled_samples = np.clip(scaled_samples, 1e-10, 1 - 1e-10)
+    scaled_samples *= 0.02
+    # scaled_samples += 1
+    
     return scaled_samples.tolist()
 
 
@@ -787,8 +876,8 @@ def run_model():
     """
     global start, end, universe
     
-    universe = ['AAPL']
-    option_premium = 0.1
+    universe = ['NVDA']
+    option_premium = -0.1
     
     treasury_start_date = datetime(2024, 1, 1)
     treasury_end_date = datetime(2024, 12, 20)
@@ -798,10 +887,11 @@ def run_model():
     
     # Parameters for Monte Carlo Simulation
     n_paths = 75  # Number of simulation paths
-    T = 1/2  # Time to Expiration (Into the Future, in years)
+    T = 0.5  # Time to Expiration (Into the Future, in years)
     dt = 1 / 252  # Daily time step
     r = risk_free_data.tail(1).values
     start, end = '2020-01-01', '2024-12-24' # FOR MODEL TRAINING (DATA MUST EXIST)
+    n_batches = 5
     
     total_days = T * 365.25
     months = int(total_days // 30.44)
@@ -810,19 +900,14 @@ def run_model():
     print("Calculating Parameters...")
     
     model_parameters = all_params(universe, start ,end)
-
-    print(f"Model Parameters for Each Stock:\n{model_parameters}")
-    
     
     strike_prices = {}
+    all_stock_prices = {}
     
     mean_option_prices = {}
-    short_mean_option_prices = {}
+    put_mean_option_prices = {}
 
     for index, row in model_parameters.iterrows():
-        
-        print(f"Row Index: {index}")  # Debugging
-        print(f"Row Data: \n{row}")   # Debugging
     
         stock = row['Stock']  # Access the stock ticker
         kappa = row['Kappa']
@@ -839,10 +924,10 @@ def run_model():
         # Calculate strike price
         strike_prices[stock] = starting_price * (1 + option_premium)
 
-        print(f"Running model for {stock}:")
-        print(f"  Kappa: {kappa:.4f}, Theta: {theta:.6f}, Sigma_v: {sigma_v:.6f}, V0: {v0:.6f}, Mu: {mu_daily:.6f}, Starting Price: {starting_price:.2f}")
+        # print(f"Running model for {stock}:")
+        # print(f"  Kappa: {kappa:.4f}, Theta: {theta:.6f}, Sigma_v: {sigma_v:.6f}, V0: {v0:.6f}, Mu: {mu_daily:.6f}, Starting Price: {starting_price:.2f}")
 
-        print(strike_prices)
+        # print(strike_prices)
         # Simulate stock prices using the simulate_stock_prices function
         high_vol_params = {
             'Kappa': kappa,
@@ -861,44 +946,54 @@ def run_model():
             'lambda': poisson_lambda
         }
 
-        simulated_prices = simulate_stock_prices(
-            S0=starting_price,
-            T=T,
-            dt=dt,
-            n_paths=n_paths,
-            high_vol_params=high_vol_params,
-            low_vol_params=low_vol_params,
-            poisson_params = poisson_params
-        )
+        for i in range(n_batches):
+            simulated_prices = simulate_stock_prices(
+                S0=starting_price,
+                T=T,
+                dt=dt,
+                n_paths=n_paths,
+                high_vol_params=high_vol_params,
+                low_vol_params=low_vol_params,
+                poisson_params = poisson_params
+            )
+            
+            all_stock_prices[f"Simulation {i}"] = simulated_prices
+        
+        all_final_prices = []
+        
+        for simulation in all_stock_prices:
+            simulation_price = all_stock_prices[simulation]
+            lower_bound,upper_bound,final_mean = convergence_analysis(simulation_price)
+            all_final_prices.append(final_mean)        
         
         strike_prices[stock] = row['Starting Price'] * (1 + option_premium) #10% Down from current price
         
-        print(f"Simulated Prices for {stock}")
-        print(simulated_prices)
+        # print(f"Simulated Prices for {stock}")
+        # print(simulated_prices)
 
-        # Perform Monte Carlo analysis
-        n_batches = 50  # Example number of Monte Carlo batches
-        all_final_prices, _, _ = monte_carlo_simulation(simulated_prices=simulated_prices, n_batches=n_batches, future_regimes=None)
-        
         # Calculate option prices
         option_prices = []
-        short_option_prices = []
-        
+        put_option_prices = []
+                
         for price in all_final_prices:
-            option_price, short_option_price = calculate_option_price(price, X = strike_prices[stock], r=r, T=T)  # Use starting_price directly
+            option_price, put_option_price = calculate_option_price(price, X = strike_prices[stock], r=r, T=T, sigma = high_vol_params['V0'])  # Use starting_price directly
             option_prices.append(option_price)
-
-            short_option_prices.append(short_option_price)
+            put_option_prices.append(put_option_price)
+            
+            # print(f"HERE: {high_vol_params['V0']}") DEBUGGING
         
         # Calculate mean option price
         mean_option_price = np.mean(option_prices)
         mean_option_prices[stock] = mean_option_price
         
-        short_mean_option_price = np.mean(short_option_prices)
-        short_mean_option_prices[stock] = short_mean_option_price
+        put_mean_option_price = np.mean(put_option_prices)
+        put_mean_option_prices[stock] = put_mean_option_price
+        
+        print(f"STRIKE PRICES: {strike_prices}")
+        # print(f"ALL FINAL PRICES: {all_final_prices}")
 
         # Optional plotting
-        plt.figure(figsize=(10, 6))
+        plt.figure(figsize=(10, 6))   
         plt.plot(simulated_prices.T, alpha=0.3)
         plt.title(f"Simulated Prices for {stock}")
         plt.xlabel("Time Steps")
@@ -906,23 +1001,39 @@ def run_model():
         plt.show()
         
     mean_option_prices = pd.Series(mean_option_prices)
-    short_mean_option_prices = pd.Series(short_mean_option_prices)
-    all_option_prices = pd.concat([mean_option_prices, short_mean_option_prices], axis=1)
+    put_mean_option_prices = pd.Series(put_mean_option_prices)
 
+    pd.options.display.max_rows = None
+    pd.options.display.max_columns = None
+
+    all_option_prices = pd.concat([mean_option_prices, put_mean_option_prices], axis=1)
     all_option_prices = all_option_prices.rename(columns={0: 'Call Price', 1: 'Put Price'})
     
-    
-    print(f"Mean Estimated Option Prices: \n{all_option_prices}")
+    print(f"Model Predicted Option Prices: \n{all_option_prices}")
     print(f"Option Information:")
     print(f"Time to Expiration: {months} months, {days} days")
     
+    call_bsm_prices = []
+    put_bsm_prices = []
     
     for stock in universe:
-        # Calculate Black Scholes Pricing for comparison
-        bsm_price = use_BSM_Compare(stock, strike_prices[stock], r, T, high_vol_params['V0'])
-        print(f"Black Scholes Model Pricing for {stock}: ")
-        print(bsm_price)
-    
+        call_bsm, put_bsm = use_BSM_Compare(stock, 
+            risk_free_rate = r, 
+            strike_prices = strike_prices[stock], 
+            time_to_expiration = T,
+            volatility = high_vol_params['V0'])
+        
+        
+        call_bsm_prices.append(call_bsm)
+        put_bsm_prices.append(put_bsm)
+        
+    call_bsm_prices = [float(arr.flatten()[0]) for arr in call_bsm_prices]
+    put_bsm_prices = [float(arr.flatten()[0]) for arr in put_bsm_prices]
+
+    call_bsm_prices = pd.Series(call_bsm_prices)    
+
+    # print(f"LONG BSM: {call_bsm_prices}")
+    # print(f"PUT BSM: {put_bsm_prices}")
 
     return all_option_prices
 
@@ -937,3 +1048,6 @@ run_model()
 # git add .
 # git commit -m "smthn"
 # git push
+
+# NOTE: ADD IN AN IMPLIED VOLATILITY FOR OPTION INFO
+# IF DOESN'T WORK TRY IN NEW FILE
