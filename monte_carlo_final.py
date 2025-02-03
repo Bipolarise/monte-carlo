@@ -139,7 +139,6 @@ def use_BSM_Compare(ticker, strike_prices, risk_free_rate, time_to_expiration, v
         t=time_to_expiration,
         sigma=volatility
     )
-    
 
     return option_price, put_price
 
@@ -442,7 +441,6 @@ def calculate_option_price(final_mean, X, r, T, sigma):
     put_option_price += time_value
     option_price += time_value
     
-    
     return option_price, put_option_price
 
 
@@ -489,7 +487,6 @@ def negative_log_likelihood_gbm(params, returns):
         - n / 2 * np.log(sigma**2)
         - np.sum((returns - mu)**2) / (2 * sigma**2)
     )
-    
     
     return -log_likelihood
 
@@ -543,7 +540,6 @@ def calculate_mu(universe, start, end):
     return results_df
 
 def simulate_heston_variance(kappa, theta, sigma_v, v0, dt, n_steps):
-    np.random.seed(42)  # For reproducibility
     v = np.zeros(n_steps)
     v[0] = v0
     for t in range(1, n_steps):
@@ -576,8 +572,6 @@ def estimate_heston_parameters(ticker, start = start, end = end):
         variance = annualized_volatility ** 2
         observed_v = variance.dropna().values
 
-        # variance =   log_returns[f'{ticker}_Log Returns'].rolling(window=15).var()
-        # observed_v = variance.dropna().values 
         dt = 1 / 252  
 
         initial_guess = [1.0, observed_v.mean(), observed_v.std(), observed_v[0]]  # [kappa, theta, sigma_v, v0]
@@ -700,7 +694,6 @@ def poisson_process(rate, time_duration):
     - inter_arrival_times: list
         The inter-arrival times between events.
     """
-    # np.random.seed(42)
     
     inter_arrival_times = []
     total_time = 0
@@ -821,8 +814,6 @@ def predict_shocks_probabilistic(universe, start, end, num_shocks, threshold=1.7
 
     return predictions
 
-
-
 def log_normal_shock_factor(mu, sigma, num_events):
     """
     Simulates the severity of the shock once a shock event has been triggered. It is decided that the severity of the shock
@@ -925,7 +916,6 @@ def run_model():
         poisson_sigma = row['Sigma Annualized']
         poisson_lambda = row['Lambda Annualized']
         
-
         # Calculate strike price
         strike_prices[stock] = starting_price * (1 + option_premium)
 
@@ -972,9 +962,6 @@ def run_model():
             all_final_prices.append(final_mean)        
         
         strike_prices[stock] = row['Starting Price'] * (1 + option_premium) #10% Down from current price
-        
-        # print(f"Simulated Prices for {stock}")
-        # print(simulated_prices)
 
         # Calculate option prices
         option_prices = []
@@ -985,8 +972,7 @@ def run_model():
             option_prices.append(option_price)
             put_option_prices.append(put_option_price)
             
-            # print(f"HERE: {high_vol_params['V0']}") DEBUGGING
-        
+      
         # Calculate mean option price
         mean_option_price = np.mean(option_prices)
         mean_option_prices[stock] = mean_option_price
